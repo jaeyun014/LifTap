@@ -1,12 +1,14 @@
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
-    var onRestore: ((String, Browser) -> Void)?
+    var onRestore: ((String, BrowserDestination) -> Void)?
     var onClose: (() -> Void)?
 
     private let store: SessionStore
-    private let browsers: [Browser]
+    private var browsers: [BrowserDestination]
+    private var selectedBrowser: BrowserDestination?
     private let table = SessionTable()
     private let preview = NSTextView()
     private let previewScroll = NSScrollView()
@@ -29,9 +31,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
 
     init(store: SessionStore, defaultBrowser: Browser?) {
         self.store = store
-        browsers = Browser.allCases.filter {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.rawValue) != nil
-        }
+        browsers = BrowserDestination.installed()
         super.init(contentRect: NSRect(x: 0, y: 0, width: 568, height: 500),
                    styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
         isReleasedWhenClosed = false
@@ -57,7 +57,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     }
 
     func prepareTarget(_ browser: Browser?) {
-        target.selectItem(at: browser.flatMap { browsers.firstIndex(of: $0) }.map { $0 + 1 } ?? 0)
+        selectedBrowser = browser.flatMap { browser in browsers.first { $0.scriptedBrowser == browser } }
+        selectCurrentTarget()
         updateControls()
     }
 
@@ -68,13 +69,10 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         } else {
             NSApp.activate(ignoringOtherApps: true)
         }
-        if browsers.isEmpty {
-            setStatus("사용할 수 있는 브라우저가 없어요. Chrome이나 Safari가 설치되어 있는지 확인해 주세요.",
-                      isError: true)
-        } else if chooseTarget {
+        if chooseTarget {
             setStatus("대상 브라우저를 선택해 주세요.")
         }
-        makeFirstResponder(chooseTarget && !browsers.isEmpty ? target : table)
+        makeFirstResponder(chooseTarget ? target : table)
     }
 
     func reload() {
@@ -176,8 +174,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
 
         let label = NSTextField(labelWithString: "대상 브라우저")
         label.font = .systemFont(ofSize: 12, weight: .medium)
-        target.addItem(withTitle: "브라우저 선택")
-        target.addItems(withTitles: browsers.map(\.name))
+        rebuildTargets()
         target.setAccessibilityLabel("대상 브라우저")
         target.target = self
         target.action = #selector(changeTarget)
@@ -298,7 +295,9 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         olderButton.isEnabled = canBrowse && nextCursor != nil
         previewButton.isEnabled = canBrowse && selectedSession != nil
         deleteButton.isEnabled = canBrowse && !isBusy && selectedSession != nil
-        openButton.isEnabled = deleteButton.isEnabled && target.indexOfSelectedItem > 0
+        openButton.title = selectedBrowser?.scriptedBrowser == nil && selectedBrowser != nil
+            ? "브라우저에서 열기" : "새 창에 열기"
+        openButton.isEnabled = deleteButton.isEnabled && selectedBrowser != nil
     }
 
     @objc private func confirmDeletion() {
@@ -342,25 +341,81 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         }
     }
 
-    @objc private func changeTarget() {
-        if target.indexOfSelectedItem > 0 {
-            if !isBusy { setStatus("") }
-            makeFirstResponder(table)
+    private func rebuildTargets() {
+        target.removeAllItems()
+        target.addItem(withTitle: "브라우저 선택")
+        for (index, browser) in browsers.enumerated() {
+            let item = NSMenuItem(title: browser.name, action: nil, keyEquivalent: "")
+            item.tag = index + 1
+            let icon = NSWorkspace.shared.icon(forFile: browser.url.path)
+            icon.size = NSSize(width: 16, height: 16)
+            item.image = icon
+            target.menu?.addItem(item)
         }
+        target.menu?.addItem(.separator())
+        let other = NSMenuItem(title: "다른 브라우저 선택…", action: nil, keyEquivalent: "")
+        other.tag = -1
+        target.menu?.addItem(other)
+        selectCurrentTarget()
+    }
+
+    private func selectCurrentTarget() {
+        let index = selectedBrowser.flatMap { selected in browsers.firstIndex { $0.url == selected.url } }
+        target.selectItem(withTag: index.map { $0 + 1 } ?? 0)
+    }
+
+    @objc private func changeTarget() {
+        let tag = target.selectedTag()
+        if tag == -1 {
+            selectCurrentTarget()
+            chooseOtherBrowser()
+        } else {
+            selectedBrowser = tag > 0 && browsers.indices.contains(tag - 1) ? browsers[tag - 1] : nil
+            updateTargetStatus()
+        }
+    }
+
+    private func chooseOtherBrowser() {
+        guard attachedSheet == nil else { return }
+        let picker = NSOpenPanel()
+        picker.allowedContentTypes = [.application]
+        picker.treatsFilePackagesAsDirectories = false
+        picker.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        picker.message = "저장한 주소를 열 브라우저 앱을 선택해 주세요."
+        picker.prompt = "선택"
+        picker.beginSheetModal(for: self) { [weak self] response in
+            guard response == .OK, let self, let url = picker.url else { return }
+            guard let browser = BrowserDestination(url: url) else {
+                self.setStatus("브라우저 앱을 선택해 주세요.", isError: true)
+                return
+            }
+            if !self.browsers.contains(where: { $0.url == url }) { self.browsers.append(browser) }
+            self.selectedBrowser = browser
+            self.rebuildTargets()
+            self.updateTargetStatus()
+        }
+    }
+
+    private func updateTargetStatus() {
+        if !isBusy {
+            if let selectedBrowser, selectedBrowser.scriptedBrowser == nil {
+                setStatus("브라우저 설정에 따라 기존 창에서 열릴 수 있어요.")
+            } else {
+                setStatus("")
+            }
+        }
+        if selectedBrowser != nil { makeFirstResponder(table) }
         updateControls()
     }
 
     @objc private func openSelection() {
         guard !isBusy, !isLoading, !isDeleting, let session = selectedSession else { return }
-        let index = target.indexOfSelectedItem - 1
-        guard browsers.indices.contains(index) else {
-            if !browsers.isEmpty {
-                setStatus("대상 브라우저를 선택해 주세요.")
-                makeFirstResponder(target)
-            }
+        guard let selectedBrowser else {
+            setStatus("대상 브라우저를 선택해 주세요.")
+            makeFirstResponder(target)
             return
         }
-        onRestore?(session.key, browsers[index])
+        onRestore?(session.key, selectedBrowser)
     }
 
     @objc private func doubleClickSession() {

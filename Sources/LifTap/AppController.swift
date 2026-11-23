@@ -70,11 +70,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             let capturedAt = Date()
             let scope: CaptureScope = command == .captureTab ? .activeTab : .window
+            let store = store
             perform {
-                let tabs = try BrowserAutomation.capture(in: browser, scope: scope)
-                let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: tabs)
-                try self.store.save(session)
-                return .captured(session.tabs.count)
+                try await Task.detached(priority: .userInitiated) {
+                    let tabs = try BrowserAutomation.capture(in: browser, scope: scope)
+                    let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: tabs)
+                    try store.save(session)
+                    return .captured(session.tabs.count)
+                }.value
             }
         case .restoreLatest:
             if let browser {
@@ -105,7 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         feedback.dismiss()
         let panel = SessionPanel(store: store, defaultBrowser: defaultBrowser)
         self.panel = panel
-        panel.onRestore = { [weak self] key, browser in self?.restore(key: key, in: browser) }
+        panel.onRestore = { [weak self] key, destination in self?.restore(key: key, in: destination) }
         panel.onClose = { [weak self] in self?.panel = nil }
         panel.setBusy(busy)
         panel.show(chooseTarget: chooseTarget)
@@ -116,18 +119,40 @@ final class AppController: NSObject, NSApplicationDelegate {
             announce(LifTapError.browserUnavailable(browser).localizedDescription, isError: true)
             return
         }
+        let store = store
         perform {
-            let session = try key.map(self.store.load) ?? self.store.latest()
-            return .restored(try BrowserAutomation.restore(session, in: browser), browser)
+            try await Task.detached(priority: .userInitiated) {
+                let session = try key.map(store.load) ?? store.latest()
+                return .restored(try BrowserAutomation.restore(session, in: browser), browser)
+            }.value
+        }
+    }
+
+    private func restore(key: String, in destination: BrowserDestination) {
+        if let browser = destination.scriptedBrowser {
+            restore(key: key, in: browser)
+            return
+        }
+        let store = store
+        perform {
+            let (urls, skipped) = try await Task.detached(priority: .userInitiated) {
+                let session = try store.load(key)
+                let urls = session.tabs.compactMap { $0.isTransferable ? URL(string: $0.url) : nil }
+                return (urls, session.tabs.count - urls.count)
+            }.value
+            guard !urls.isEmpty else { throw LifTapError.noTransferableTabs }
+            try await destination.open(urls)
+            return .handedOff(destination.name, urls.count, skipped)
         }
     }
 
     private enum OperationResult: Sendable {
         case captured(Int)
         case restored(RestoreReport, Browser)
+        case handedOff(String, Int, Int)
     }
 
-    private func perform(_ action: @escaping @Sendable () throws -> OperationResult) {
+    private func perform(_ action: @escaping () async throws -> OperationResult) {
         guard !busy else {
             announce("브라우저 작업이 진행 중이에요.")
             return
@@ -141,11 +166,15 @@ final class AppController: NSObject, NSApplicationDelegate {
                 panel?.setBusy(false)
             }
             do {
-                let result = try await Task.detached(priority: .userInitiated, operation: action).value
+                let result = try await action()
                 switch result {
                 case let .captured(count):
                     panel?.reload()
                     announce("\(count)개 탭을 저장했어요.")
+                case let .handedOff(name, count, skipped):
+                    panel?.close()
+                    let text = "\(name)에 \(count)개 주소 열기를 요청했어요."
+                    announce(skipped > 0 ? text + " · \(skipped)개 건너뜀" : text)
                 case let .restored(report, browser):
                     let issue = report.errorCode.map { BrowserAutomation.error(for: $0, browser: browser).localizedDescription }
                     let text = [report.message, issue].compactMap { $0 }.joined(separator: "\n")
