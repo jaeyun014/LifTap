@@ -306,12 +306,15 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         let alert = NSAlert()
         alert.messageText = "‘\(session.name)’ 세션을 삭제할까요?"
         alert.informativeText = "저장된 세션이 삭제됩니다. 현재 브라우저에 열린 탭은 그대로 유지됩니다."
+        let confirm = alert.addButton(withTitle: "삭제")
+        confirm.hasDestructiveAction = true
         alert.addButton(withTitle: "취소").keyEquivalent = "\u{1b}"
-        alert.addButton(withTitle: "삭제").hasDestructiveAction = true
         alert.beginSheetModal(for: self) { [weak self] response in
-            guard response == .alertSecondButtonReturn else { return }
+            guard response == .alertFirstButtonReturn else { return }
             self?.deleteSession(session.key)
         }
+        // AppKit clears the default shortcut for a destructive button when presenting the sheet.
+        confirm.keyEquivalent = "\r"
     }
 
     private func deleteSession(_ key: String) {
