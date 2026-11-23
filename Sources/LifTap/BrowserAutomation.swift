@@ -18,10 +18,15 @@ struct RestoreReport: Codable, Sendable {
     }
 }
 
+enum CaptureScope: String, Codable, Sendable {
+    case window, activeTab
+}
+
 enum BrowserAutomation {
     private struct Request: Codable {
         let browser: Browser
-        let urls: [String]? // nil captures the front window
+        let urls: [String]? // nil captures from the front window
+        var captureScope: CaptureScope? = nil
     }
 
     private struct Response: Codable {
@@ -30,8 +35,8 @@ enum BrowserAutomation {
         var errorCode: Int?
     }
 
-    static func capture(in browser: Browser) throws -> [BrowserTab] {
-        let response = try run(Request(browser: browser, urls: nil))
+    static func capture(in browser: Browser, scope: CaptureScope) throws -> [BrowserTab] {
+        let response = try run(Request(browser: browser, urls: nil, captureScope: scope))
         guard let tabs = response.tabs else { throw LifTapError.workerFailed }
         return tabs
     }
@@ -101,7 +106,9 @@ enum BrowserAutomation {
     static func serve() throws {
         let request = try JSONDecoder().decode(Request.self,
                                                from: FileHandle.standardInput.readDataToEndOfFile())
-        let script = request.urls == nil ? captureScript(for: request.browser) : restoreScript(for: request.browser)
+        let script = request.urls == nil
+            ? captureScript(for: request.browser, scope: request.captureScope ?? .window)
+            : restoreScript(for: request.browser)
         let handler = request.urls == nil ? "capturetabs" : "restoretabs"
         let args = NSAppleEventDescriptor.list()
         if let urls = request.urls {
@@ -152,8 +159,19 @@ enum BrowserAutomation {
         try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(response))
     }
 
-    static func captureScript(for browser: Browser) -> String {
+    static func captureScript(for browser: Browser, scope: CaptureScope) -> String {
         let titleProperty = browser == .chrome ? "title" : "name"
+        let snapshot: String
+        switch scope {
+        case .window:
+            snapshot = "set snapshot to get every tab of window id sourceID"
+        case .activeTab:
+            let selectedTabProperty = browser == .chrome ? "active tab" : "current tab"
+            snapshot = """
+            set selectedTab to get \(selectedTabProperty) of window id sourceID
+            set snapshot to {selectedTab}
+            """
+        }
         return """
         on captureTabs()
             with timeout of 12 seconds
@@ -164,7 +182,7 @@ enum BrowserAutomation {
                         if errorCode is -1728 or errorCode is -1719 then error number -10001
                         error errorText number errorCode
                     end try
-                    set snapshot to get every tab of window id sourceID
+                    \(snapshot)
                     set captured to {}
                     repeat with sourceTab in snapshot
                         try

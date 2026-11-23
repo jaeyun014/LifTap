@@ -1,19 +1,24 @@
 import Carbon
 
 enum Command: UInt32, CaseIterable {
-    case capture = 1, restoreLatest, showSessions
+    case capture = 1, restoreLatest, showSessions, captureTab
 
     var keyCode: Int {
         switch self {
-        case .capture: kVK_ANSI_C
+        case .capture, .captureTab: kVK_ANSI_C
         case .restoreLatest: kVK_ANSI_V
         case .showSessions: kVK_Space
         }
     }
 
+    var modifiers: UInt32 {
+        UInt32(self == .captureTab ? optionKey : controlKey | optionKey)
+    }
+
     var title: String {
         switch self {
         case .capture: "현재 창 담기"
+        case .captureTab: "현재 탭 담기"
         case .restoreLatest: "마지막 세션 열기"
         case .showSessions: "세션 목록 보기"
         }
@@ -22,6 +27,7 @@ enum Command: UInt32, CaseIterable {
     var shortcut: String {
         switch self {
         case .capture: "⌃⌥C"
+        case .captureTab: "⌥C"
         case .restoreLatest: "⌃⌥V"
         case .showSessions: "⌃⌥Space"
         }
@@ -59,7 +65,7 @@ final class HotKeys {
         for command in Command.allCases {
             var reference: EventHotKeyRef?
             let id = EventHotKeyID(signature: Self.signature, id: command.rawValue)
-            let result = RegisterEventHotKey(UInt32(command.keyCode), UInt32(controlKey | optionKey),
+            let result = RegisterEventHotKey(UInt32(command.keyCode), command.modifiers,
                                              id, target, 0, &reference)
             if result == noErr, let reference {
                 registrations.append(reference)

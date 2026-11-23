@@ -63,14 +63,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let browser = frontmost?.bundleIdentifier.flatMap(Browser.init(rawValue:))
         switch command {
-        case .capture:
+        case .capture, .captureTab:
             guard let browser else {
                 announce(LifTapError.unsupportedBrowser.localizedDescription, isError: true)
                 return
             }
             let capturedAt = Date()
+            let scope: CaptureScope = command == .captureTab ? .activeTab : .window
             perform {
-                let tabs = try BrowserAutomation.capture(in: browser)
+                let tabs = try BrowserAutomation.capture(in: browser, scope: scope)
                 let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: tabs)
                 try self.store.save(session)
                 return .captured(session.tabs.count)
