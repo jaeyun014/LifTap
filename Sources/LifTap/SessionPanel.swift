@@ -13,6 +13,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     private let target = NSPopUpButton()
     private let openButton = NSButton(title: "새 창에 열기", target: nil, action: nil)
     private let previewButton = NSButton(title: "탭 미리보기", target: nil, action: nil)
+    private let deleteButton = NSButton(title: "세션 삭제…", target: nil, action: nil)
     private let latestButton = NSButton(title: "최신으로", target: nil, action: nil)
     private let olderButton = NSButton(title: "이전 세션", target: nil, action: nil)
     private let status = NSTextField(wrappingLabelWithString: "")
@@ -23,6 +24,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     private var isLoading = false
     private var reloadPending = false
     private var isBusy = false
+    private var isDeleting = false
     private var previewTask: Task<Void, Never>?
 
     init(store: SessionStore, defaultBrowser: Browser?) {
@@ -148,10 +150,12 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
 
         previewButton.target = self
         previewButton.action = #selector(togglePreview)
+        deleteButton.target = self
+        deleteButton.action = #selector(confirmDeletion)
         let hint = NSTextField(labelWithString: "↑↓ 선택 · → 미리보기 · ↩ 열기 · Esc 닫기")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(row([previewButton, NSView(), hint]))
+        stack.addArrangedSubview(row([previewButton, deleteButton, NSView(), hint]))
 
         preview.isEditable = false
         preview.isSelectable = true
@@ -206,7 +210,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         ])
         initialFirstResponder = table
         table.nextKeyView = previewButton
-        previewButton.nextKeyView = preview
+        previewButton.nextKeyView = deleteButton
+        deleteButton.nextKeyView = preview
         preview.nextKeyView = target
         target.nextKeyView = openButton
         openButton.nextKeyView = latestButton
@@ -241,6 +246,11 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
             }
             switch result {
             case let .success(page):
+                if requestedCursor != nil, page.sessions.isEmpty,
+                   page.nextCursor == nil, page.unreadableCount == 0 {
+                    self.firstPage()
+                    return
+                }
                 self.showPreview(false)
                 self.sessions = page.sessions
                 self.nextCursor = page.nextCursor
@@ -282,10 +292,50 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     }
 
     private func updateControls() {
-        latestButton.isEnabled = !isLoading && cursor != nil
-        olderButton.isEnabled = !isLoading && nextCursor != nil
-        previewButton.isEnabled = !isLoading && selectedSession != nil
-        openButton.isEnabled = !isBusy && !isLoading && selectedSession != nil && target.indexOfSelectedItem > 0
+        let canBrowse = !isLoading && !isDeleting
+        latestButton.isEnabled = canBrowse && cursor != nil
+        olderButton.isEnabled = canBrowse && nextCursor != nil
+        previewButton.isEnabled = canBrowse && selectedSession != nil
+        deleteButton.isEnabled = canBrowse && !isBusy && selectedSession != nil
+        openButton.isEnabled = deleteButton.isEnabled && target.indexOfSelectedItem > 0
+    }
+
+    @objc private func confirmDeletion() {
+        guard !isBusy, !isLoading, !isDeleting, attachedSheet == nil, let session = selectedSession else { return }
+        let alert = NSAlert()
+        alert.messageText = "‘\(session.name)’ 세션을 삭제할까요?"
+        alert.informativeText = "저장된 세션이 삭제됩니다. 현재 브라우저에 열린 탭은 그대로 유지됩니다."
+        alert.addButton(withTitle: "취소").keyEquivalent = "\u{1b}"
+        alert.addButton(withTitle: "삭제").hasDestructiveAction = true
+        alert.beginSheetModal(for: self) { [weak self] response in
+            guard response == .alertSecondButtonReturn else { return }
+            self?.deleteSession(session.key)
+        }
+    }
+
+    private func deleteSession(_ key: String) {
+        isDeleting = true
+        updateControls()
+        let store = store
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try store.delete(key) }
+            }.value
+            guard let self else { return }
+            self.isDeleting = false
+            switch result {
+            case .success:
+                self.setStatus("세션을 삭제했어요.")
+                if self.isLoading {
+                    self.reloadPending = true
+                } else {
+                    self.loadPage()
+                }
+            case let .failure(error):
+                self.setStatus(error.localizedDescription, isError: true)
+                self.updateControls()
+            }
+        }
     }
 
     @objc private func changeTarget() {
@@ -297,7 +347,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     }
 
     @objc private func openSelection() {
-        guard !isBusy, !isLoading, let session = selectedSession else { return }
+        guard !isBusy, !isLoading, !isDeleting, let session = selectedSession else { return }
         let index = target.indexOfSelectedItem - 1
         guard browsers.indices.contains(index) else {
             if !browsers.isEmpty {

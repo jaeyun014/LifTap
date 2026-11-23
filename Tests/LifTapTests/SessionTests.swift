@@ -75,6 +75,25 @@ struct SessionTests {
         }
     }
 
+    @Test func deletionUpdatesTheListAndLatestWithoutTouchingOtherSessions() throws {
+        try withStore { store in
+            let earlier = try session(0, tabs: [web])
+            let latest = try session(1, tabs: [web])
+            try store.save(earlier)
+            try store.save(latest)
+
+            try store.delete(latest.key)
+            try store.delete(latest.key)
+            #expect(try store.latest().id == earlier.id)
+            #expect(try store.page(before: nil).sessions.map(\.key) == [earlier.key])
+            #expect(throws: LifTapError.self) { try store.load(latest.key) }
+
+            try store.delete(earlier.key)
+            #expect(try store.page(before: nil).sessions.isEmpty)
+            #expect(throws: LifTapError.self) { try store.latest() }
+        }
+    }
+
     @Test func transferRequiresAWebSchemeAndHost() {
         let supported = ["https://example.test", "HTTP://localhost:8000/a"]
         let unsupported = ["chrome://settings/", "about:blank", "safari-extension://id/path",

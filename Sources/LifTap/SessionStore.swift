@@ -105,6 +105,22 @@ struct SessionStore: Sendable {
         }
     }
 
+    func delete(_ key: String) throws {
+        guard Self.isSessionKey(key) else { throw LifTapError.storageDelete }
+        let file = directory.appendingPathComponent(key)
+        do {
+            guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw LifTapError.storageDelete
+            }
+            try FileManager.default.removeItem(at: file)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) {
+            return
+        } catch {
+            throw LifTapError.storageDelete
+        }
+    }
+
     func latest() throws -> TabSession {
         guard let key = try newestKeys(limit: 1, before: nil).first else {
             throw LifTapError.noSessions
@@ -164,7 +180,7 @@ struct SessionStore: Sendable {
 enum LifTapError: LocalizedError {
     case unsupportedBrowser, noWindow, noTransferableTabs, noSessions
     case browserUnavailable(Browser), permissionDenied(Browser), timedOut(Browser), newWindowNotIdentified(Browser)
-    case browserFailed(Browser, Int?), workerFailed, storageRead, storageWrite
+    case browserFailed(Browser, Int?), workerFailed, storageRead, storageWrite, storageDelete
 
     var errorDescription: String? {
         switch self {
@@ -183,6 +199,7 @@ enum LifTapError: LocalizedError {
         case .workerFailed: "브라우저 작업의 결과를 확인할 수 없어요. 다시 열기 전에 브라우저를 확인해 주세요."
         case .storageRead: "저장된 세션을 읽을 수 없어요."
         case .storageWrite: "세션을 저장하지 못했어요. 디스크 공간과 저장 폴더 권한을 확인해 주세요."
+        case .storageDelete: "세션을 삭제하지 못했어요."
         }
     }
 }
