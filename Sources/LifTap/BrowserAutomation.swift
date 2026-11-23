@@ -160,13 +160,13 @@ enum BrowserAutomation {
     }
 
     static func captureScript(for browser: Browser, scope: CaptureScope) -> String {
-        let titleProperty = browser == .chrome ? "title" : "name"
+        let titleProperty = browser == .safari ? "name" : "title"
         let snapshot: String
         switch scope {
         case .window:
             snapshot = "set snapshot to get every tab of window id sourceID"
         case .activeTab:
-            let selectedTabProperty = browser == .chrome ? "active tab" : "current tab"
+            let selectedTabProperty = browser == .safari ? "current tab" : "active tab"
             snapshot = """
             set selectedTab to get \(selectedTabProperty) of window id sourceID
             set snapshot to {selectedTab}
@@ -212,7 +212,7 @@ enum BrowserAutomation {
         let createWindow: String
         let raiseWindow: String
         switch browser {
-        case .chrome:
+        case .chrome, .aside:
             createWindow = "set targetID to id of (make new window)"
             raiseWindow = ""
         case .safari:

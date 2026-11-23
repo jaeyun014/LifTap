@@ -3,11 +3,13 @@ import Foundation
 enum Browser: String, CaseIterable, Codable, Sendable {
     case chrome = "com.google.Chrome"
     case safari = "com.apple.Safari"
+    case aside = "at.studio.AsideBrowser"
 
     var name: String {
         switch self {
         case .chrome: "Google Chrome"
         case .safari: "Safari"
+        case .aside: "Aside"
         }
     }
 }
@@ -184,7 +186,7 @@ enum LifTapError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedBrowser: "Chrome 또는 Safari 창을 활성화한 뒤 다시 담아 주세요."
+        case .unsupportedBrowser: "Chrome, Safari 또는 Aside 창을 활성화한 뒤 다시 담아 주세요."
         case .noWindow: "현재 브라우저에 담을 수 있는 창이 없어요."
         case .noTransferableTabs: "담을 수 있는 웹 주소(HTTP 또는 HTTPS)가 없어요."
         case .noSessions: "저장한 세션이 없어요. 브라우저에서 먼저 탭을 담아 주세요."

@@ -2,7 +2,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NSTableViewDataSource, NSTableViewDelegate {
     var onRestore: ((String, BrowserDestination) -> Void)?
     var onClose: (() -> Void)?
 
@@ -57,7 +57,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     }
 
     func prepareTarget(_ browser: Browser?) {
-        selectedBrowser = browser.flatMap { browser in browsers.first { $0.scriptedBrowser == browser } }
+        selectedBrowser = browser.flatMap { browser in browsers.first { $0.browser == browser } }
         selectCurrentTarget()
         updateControls()
     }
@@ -295,8 +295,6 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         olderButton.isEnabled = canBrowse && nextCursor != nil
         previewButton.isEnabled = canBrowse && selectedSession != nil
         deleteButton.isEnabled = canBrowse && !isBusy && selectedSession != nil
-        openButton.title = selectedBrowser?.scriptedBrowser == nil && selectedBrowser != nil
-            ? "브라우저에서 열기" : "새 창에 열기"
         openButton.isEnabled = deleteButton.isEnabled && selectedBrowser != nil
     }
 
@@ -378,15 +376,16 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
     private func chooseOtherBrowser() {
         guard attachedSheet == nil else { return }
         let picker = NSOpenPanel()
+        picker.delegate = self
         picker.allowedContentTypes = [.application]
         picker.treatsFilePackagesAsDirectories = false
         picker.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        picker.message = "저장한 주소를 열 브라우저 앱을 선택해 주세요."
+        picker.message = "세션을 새 창으로 열 수 있는 브라우저를 선택해 주세요."
         picker.prompt = "선택"
         picker.beginSheetModal(for: self) { [weak self] response in
             guard response == .OK, let self, let url = picker.url else { return }
             guard let browser = BrowserDestination(url: url) else {
-                self.setStatus("브라우저 앱을 선택해 주세요.", isError: true)
+                self.setStatus("새 창으로 열 수 있는 브라우저를 선택해 주세요.", isError: true)
                 return
             }
             if !self.browsers.contains(where: { $0.url == url }) { self.browsers.append(browser) }
@@ -396,14 +395,16 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         }
     }
 
-    private func updateTargetStatus() {
-        if !isBusy {
-            if let selectedBrowser, selectedBrowser.scriptedBrowser == nil {
-                setStatus("브라우저 설정에 따라 기존 창에서 열릴 수 있어요.")
-            } else {
-                setStatus("")
-            }
+    func panel(_ sender: Any, shouldEnable url: URL) -> Bool {
+        if url.pathExtension.lowercased() == "app" {
+            return BrowserDestination(url: url) != nil
         }
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        return values?.isDirectory == true && values?.isPackage == false
+    }
+
+    private func updateTargetStatus() {
+        if !isBusy { setStatus("") }
         if selectedBrowser != nil { makeFirstResponder(table) }
         updateControls()
     }
