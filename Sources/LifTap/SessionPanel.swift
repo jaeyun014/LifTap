@@ -134,6 +134,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         table.target = self
         table.doubleAction = #selector(doubleClickSession)
         table.onOpen = { [weak self] in self?.openSelection() }
+        table.onDelete = { [weak self] in self?.confirmDeletion() }
         table.onPreview = { [weak self] show in self?.showPreview(show) }
         let tableScroll = NSScrollView()
         tableScroll.hasVerticalScroller = true
@@ -152,7 +153,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
         previewButton.action = #selector(togglePreview)
         deleteButton.target = self
         deleteButton.action = #selector(confirmDeletion)
-        let hint = NSTextField(labelWithString: "↑↓ 선택 · → 미리보기 · ↩ 열기 · Esc 닫기")
+        let hint = NSTextField(labelWithString: "↑↓ 선택 · → 미리보기 · ⌫ 삭제 · ↩ 열기 · Esc 닫기")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
         stack.addArrangedSubview(row([previewButton, deleteButton, NSView(), hint]))
@@ -418,11 +419,14 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTa
 
 private final class SessionTable: NSTableView {
     var onOpen: (() -> Void)?
+    var onDelete: (() -> Void)?
     var onPreview: ((Bool) -> Void)?
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 36, 76: onOpen?() // Return or keypad Enter
+        case 51 where event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty:
+            if !event.isARepeat { onDelete?() } // Backspace (Delete on Mac keyboards)
         case 124: onPreview?(true) // Right
         case 123: onPreview?(false) // Left
         default: super.keyDown(with: event)
