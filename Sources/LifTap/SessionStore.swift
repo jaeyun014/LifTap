@@ -38,7 +38,7 @@ struct TabSession: Codable, Sendable {
     static let currentSchemaVersion = 1
     let schemaVersion: Int
     let id: UUID
-    let name: String
+    fileprivate(set) var name: String
     let sourceBrowser: Browser
     let createdAt: Date
     let tabs: [BrowserTab]
@@ -105,6 +105,17 @@ struct SessionStore: Sendable {
         } catch {
             throw LifTapError.storageRead
         }
+    }
+
+    func rename(_ key: String, to proposedName: String) throws -> SessionSummary {
+        var session = try load(key)
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw LifTapError.emptySessionName }
+        if session.name != name {
+            session.name = name
+            try save(session)
+        }
+        return session.summary
     }
 
     func delete(_ key: String) throws {
@@ -180,12 +191,14 @@ struct SessionStore: Sendable {
 }
 
 enum LifTapError: LocalizedError {
+    case emptySessionName
     case unsupportedBrowser, noWindow, noTransferableTabs, noSessions
     case browserUnavailable(Browser), permissionDenied(Browser), timedOut(Browser), newWindowNotIdentified(Browser)
     case browserFailed(Browser, Int?), workerFailed, storageRead, storageWrite, storageDelete
 
     var errorDescription: String? {
         switch self {
+        case .emptySessionName: "세션 이름을 입력해 주세요."
         case .unsupportedBrowser: "Chrome, Safari 또는 Aside 창을 활성화한 뒤 다시 담아 주세요."
         case .noWindow: "현재 브라우저에 담을 수 있는 창이 없어요."
         case .noTransferableTabs: "담을 수 있는 웹 주소(HTTP 또는 HTTPS)가 없어요."

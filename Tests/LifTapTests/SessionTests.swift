@@ -94,6 +94,22 @@ struct SessionTests {
         }
     }
 
+    @Test func renamePersistsWithoutChangingTheSessionKeyOrTabs() throws {
+        try withStore { store in
+            let original = try session(0, tabs: [web, web])
+            try store.save(original)
+
+            let renamed = try store.rename(original.key, to: "  새 이름  ")
+            #expect(renamed.key == original.key)
+            #expect(renamed.name == "새 이름")
+            #expect(throws: LifTapError.self) { try store.rename(original.key, to: " \n ") }
+            let saved = try store.latest()
+            #expect(saved.id == original.id)
+            #expect(saved.name == renamed.name)
+            #expect(saved.tabs == original.tabs)
+        }
+    }
+
     @Test func transferRequiresAWebSchemeAndHost() {
         let supported = ["https://example.test", "HTTP://localhost:8000/a"]
         let unsupported = ["chrome://settings/", "about:blank", "safari-extension://id/path",

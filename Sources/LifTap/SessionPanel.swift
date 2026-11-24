@@ -2,7 +2,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NSTableViewDataSource, NSTableViewDelegate {
+final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     var onRestore: ((String, BrowserDestination) -> Void)?
     var onClose: (() -> Void)?
 
@@ -27,6 +27,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     private var reloadPending = false
     private var isBusy = false
     private var isDeleting = false
+    private var nameEdit: (session: SessionSummary, field: NSTextField)?
+    private var isSavingName = false
     private var previewTask: Task<Void, Never>?
 
     init(store: SessionStore, defaultBrowser: Browser?) {
@@ -77,7 +79,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
 
     func reload() {
         cursor = nil
-        if isLoading {
+        if isLoading || nameEdit != nil || isSavingName {
             reloadPending = true
         } else {
             loadPage()
@@ -290,7 +292,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     }
 
     private func updateControls() {
-        let canBrowse = !isLoading && !isDeleting
+        let canBrowse = !isLoading && !isDeleting && nameEdit == nil && !isSavingName
         latestButton.isEnabled = canBrowse && cursor != nil
         olderButton.isEnabled = canBrowse && nextCursor != nil
         previewButton.isEnabled = canBrowse && selectedSession != nil
@@ -299,7 +301,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     }
 
     @objc private func confirmDeletion() {
-        guard !isBusy, !isLoading, !isDeleting, attachedSheet == nil, let session = selectedSession else { return }
+        guard deleteButton.isEnabled, attachedSheet == nil, let session = selectedSession else { return }
         let alert = NSAlert()
         alert.messageText = "‘\(session.name)’ 세션을 삭제할까요?"
         alert.informativeText = "저장된 세션이 삭제됩니다. 현재 브라우저에 열린 탭은 그대로 유지됩니다."
@@ -410,7 +412,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     }
 
     @objc private func openSelection() {
-        guard !isBusy, !isLoading, !isDeleting, let session = selectedSession else { return }
+        guard !isBusy, !isLoading, !isDeleting, nameEdit == nil, !isSavingName,
+              let session = selectedSession else { return }
         guard let selectedBrowser else {
             setStatus("대상 브라우저를 선택해 주세요.")
             makeFirstResponder(target)
@@ -420,8 +423,93 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     }
 
     @objc private func doubleClickSession() {
-        guard table.clickedRow >= 0 else { return }
-        openSelection()
+        let row = table.clickedRow
+        guard sessions.indices.contains(row),
+              let field = (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCell)?.textField else { return }
+        if let event = NSApp.currentEvent, event.type == .leftMouseDown || event.type == .leftMouseUp,
+           !field.bounds.contains(field.convert(event.locationInWindow, from: nil)) {
+            openSelection()
+            return
+        }
+        beginNameEdit(for: sessions[row], field: field)
+    }
+
+    private func beginNameEdit(for session: SessionSummary, field: NSTextField) {
+        guard deleteButton.isEnabled else { return }
+        nameEdit = (session, field)
+        field.delegate = self
+        field.isEditable = true
+        field.isSelectable = true
+        field.drawsBackground = true
+        field.backgroundColor = .textBackgroundColor
+        field.textColor = .textColor
+        updateControls()
+        field.selectText(nil)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard nameEdit?.field === control else { return false }
+        switch selector {
+        case #selector(NSResponder.cancelOperation(_:)):
+            finishNameEdit(proposedName: nil)
+        case #selector(NSResponder.insertNewline(_:)):
+            finishNameEdit(proposedName: textView.string)
+        default:
+            return false
+        }
+        return true
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let edit = nameEdit, notification.object as? NSTextField === edit.field else { return }
+        finishNameEdit(proposedName: edit.field.stringValue)
+    }
+
+    private func finishNameEdit(proposedName: String?) {
+        guard let edit = nameEdit else { return }
+        nameEdit = nil
+        edit.field.delegate = nil
+        if firstResponder === edit.field.currentEditor() { makeFirstResponder(table) }
+        edit.field.isEditable = false
+        edit.field.isSelectable = false
+        edit.field.drawsBackground = false
+        edit.field.textColor = .labelColor
+        edit.field.stringValue = edit.session.name
+        guard let proposedName, proposedName != edit.session.name else {
+            finishSavingName()
+            return
+        }
+        isSavingName = true
+        updateControls()
+        let store = store
+        let key = edit.session.key
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try store.rename(key, to: proposedName) }
+            }.value
+            guard let self else { return }
+            switch result {
+            case let .success(summary):
+                if let row = self.sessions.firstIndex(where: { $0.key == key }) {
+                    self.sessions[row] = summary
+                    (self.table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCell)?.show(summary)
+                }
+                self.setStatus("세션 이름을 저장했어요.")
+            case let .failure(error):
+                self.setStatus(error.localizedDescription, isError: true)
+            }
+            self.finishSavingName()
+        }
+    }
+
+    private func finishSavingName() {
+        isSavingName = false
+        if reloadPending {
+            reloadPending = false
+            loadPage()
+        } else {
+            updateControls()
+        }
     }
 
     @objc private func togglePreview() {
