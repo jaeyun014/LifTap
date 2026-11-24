@@ -62,8 +62,8 @@ private final class FrostedCoating: NSView {
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         // Keep the system's behind-window material visible through the neutral tint.
-        let opacity: CGFloat = reduced ? 1 : (dark ? 0.26 : 0.15)
-        let base = NSColor(white: dark ? 0.12 : 0.90, alpha: opacity)
+        let opacity: CGFloat = reduced ? 1 : (dark ? 0.26 : 0.40)
+        let base = NSColor(white: dark ? 0.12 : 1, alpha: opacity)
         base.setFill()
         bounds.fill()
 
