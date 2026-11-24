@@ -76,6 +76,12 @@ struct SessionPage: Sendable {
     var unreadableCount = 0
 }
 
+enum SessionSection: Sendable {
+    case grouped, single
+
+    init(tabCount: Int) { self = tabCount == 1 ? .single : .grouped }
+}
+
 struct SessionStore: Sendable {
     let directory: URL
 
@@ -141,7 +147,22 @@ struct SessionStore: Sendable {
         return try load(key)
     }
 
-    func page(before: String?) throws -> SessionPage {
+    func page(before: String?, section: SessionSection? = nil) throws -> SessionPage {
+        if let section {
+            var result = SessionPage()
+            let entries = try newestEntries(limit: 11, before: before) { key -> SessionSummary? in
+                do {
+                    let summary = try autoreleasepool { try load(key).summary }
+                    return SessionSection(tabCount: summary.tabCount) == section ? summary : nil
+                } catch {
+                    result.unreadableCount += 1
+                    return nil
+                }
+            }
+            result.sessions = entries.prefix(10).map(\.value)
+            if entries.count == 11 { result.nextCursor = entries[9].key }
+            return result
+        }
         let keys = try newestKeys(limit: 11, before: before)
         var result = SessionPage()
         for key in keys.prefix(10) {
@@ -157,7 +178,13 @@ struct SessionStore: Sendable {
     }
 
     private func newestKeys(limit: Int, before: String?) throws -> [String] {
-        var keys: [String] = []
+        try newestEntries(limit: limit, before: before) { $0 }.map(\.key)
+    }
+
+    private func newestEntries<Value>(
+        limit: Int, before: String?, read: (String) -> Value?
+    ) throws -> [(key: String, value: Value)] {
+        var matches: [(key: String, value: Value)] = []
         var listingError: NSError?
         let entries = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [],
                                                      options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]) { _, error in
@@ -165,20 +192,20 @@ struct SessionStore: Sendable {
             return false
         }
         guard let entries else { throw LifTapError.storageRead }
-        // Keep at most one page of filenames in memory, independent of archive size.
+        // Keep at most one page of matches, even when one section has few sessions.
         while let key = autoreleasepool(invoking: { (entries.nextObject() as? URL)?.lastPathComponent }) {
             guard Self.isSessionKey(key), before.map({ key < $0 }) ?? true else { continue }
-            let index = keys.firstIndex { $0 < key } ?? keys.endIndex
-            guard index < limit else { continue }
-            keys.insert(key, at: index)
-            if keys.count > limit { keys.removeLast() }
+            let index = matches.firstIndex { $0.key < key } ?? matches.endIndex
+            guard index < limit, let value = read(key) else { continue }
+            matches.insert((key, value), at: index)
+            if matches.count > limit { matches.removeLast() }
         }
         if let listingError {
             if listingError.domain == NSCocoaErrorDomain,
                [NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(listingError.code) { return [] }
             throw LifTapError.storageRead
         }
-        return keys
+        return matches
     }
 
     private static func isSessionKey(_ key: String) -> Bool {

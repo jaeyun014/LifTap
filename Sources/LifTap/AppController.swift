@@ -108,7 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let panel {
             if chooseTarget {
                 panel.prepareTarget(nil)
-                panel.reload()
+                panel.reload(selectingLatest: true)
             } else if !panel.isKeyWindow {
                 panel.prepareTarget(defaultBrowser)
             }
@@ -116,7 +116,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         feedback.dismiss()
-        let panel = SessionPanel(store: store, defaultBrowser: defaultBrowser)
+        let panel = SessionPanel(store: store, defaultBrowser: defaultBrowser, chooseLatest: chooseTarget)
         self.panel = panel
         panel.onRestore = { [weak self] key, destination in self?.restore(key: key, in: destination.browser) }
         panel.onClose = { [weak self] in self?.panel = nil }

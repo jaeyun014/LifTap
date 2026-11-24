@@ -18,9 +18,13 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     private let deleteButton = NSButton(title: "세션 삭제…", target: nil, action: nil)
     private let latestButton = NSButton(title: "최신으로", target: nil, action: nil)
     private let olderButton = NSButton(title: "이전 세션", target: nil, action: nil)
+    private let groupedButton = NSButton(title: "저장한 세션", target: nil, action: nil)
+    private let singleButton = NSButton(title: "단일 세션", target: nil, action: nil)
     private let status = NSTextField(wrappingLabelWithString: "")
     private let emptyState = NSTextField(labelWithString: "세션을 불러오는 중…")
     private var sessions: [SessionSummary] = []
+    private var section: SessionSection = .grouped
+    private var selectLatestSection = false
     private var cursor: String?
     private var nextCursor: String?
     private var isLoading = false
@@ -31,8 +35,9 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     private var isSavingName = false
     private var previewTask: Task<Void, Never>?
 
-    init(store: SessionStore, defaultBrowser: Browser?) {
+    init(store: SessionStore, defaultBrowser: Browser?, chooseLatest: Bool = false) {
         self.store = store
+        selectLatestSection = chooseLatest
         browsers = BrowserDestination.installed()
         super.init(contentRect: NSRect(x: 0, y: 0, width: 568, height: 500),
                    styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
@@ -77,7 +82,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         makeFirstResponder(chooseTarget ? target : table)
     }
 
-    func reload() {
+    func reload(selectingLatest: Bool = false) {
+        if selectingLatest { selectLatestSection = true }
         cursor = nil
         if isLoading || nameEdit != nil || isSavingName {
             reloadPending = true
@@ -112,13 +118,21 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         stack.spacing = 10
         content.addSubview(stack)
 
-        let heading = NSTextField(labelWithString: "저장한 세션")
-        heading.font = .systemFont(ofSize: 17, weight: .semibold)
+        for button in [groupedButton, singleButton] {
+            button.isBordered = false
+            button.setButtonType(.onOff)
+            button.target = self
+            button.action = #selector(changeSection(_:))
+        }
+        let divider = NSTextField(labelWithString: "/")
+        divider.font = .systemFont(ofSize: 23, weight: .light)
+        divider.textColor = .secondaryLabelColor
+        divider.setAccessibilityElement(false)
         latestButton.target = self
         latestButton.action = #selector(firstPage)
         olderButton.target = self
         olderButton.action = #selector(olderPage)
-        stack.addArrangedSubview(row([heading, NSView(), latestButton, olderButton]))
+        stack.addArrangedSubview(row([groupedButton, divider, singleButton, NSView(), latestButton, olderButton]))
 
         let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session"))
         tableColumn.resizingMask = [.autoresizingMask]
@@ -214,7 +228,9 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         deleteButton.nextKeyView = preview
         preview.nextKeyView = target
         target.nextKeyView = openButton
-        openButton.nextKeyView = latestButton
+        openButton.nextKeyView = groupedButton
+        groupedButton.nextKeyView = singleButton
+        singleButton.nextKeyView = latestButton
         latestButton.nextKeyView = olderButton
         olderButton.nextKeyView = table
     }
@@ -233,9 +249,20 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         updateControls()
         let store = store
         let requestedCursor = cursor
+        let requestedSection = section
+        let chooseLatest = selectLatestSection
+        selectLatestSection = false
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
-                Result { try store.page(before: requestedCursor) }
+                Result {
+                    let resolvedSection: SessionSection
+                    if chooseLatest, let latest = try? store.latest() {
+                        resolvedSection = SessionSection(tabCount: latest.tabs.count)
+                    } else {
+                        resolvedSection = requestedSection
+                    }
+                    return (resolvedSection, try store.page(before: requestedCursor, section: resolvedSection))
+                }
             }.value
             guard let self else { return }
             self.isLoading = false
@@ -245,7 +272,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
                 return
             }
             switch result {
-            case let .success(page):
+            case let .success((resolvedSection, page)):
+                self.section = resolvedSection
                 if requestedCursor != nil, page.sessions.isEmpty,
                    page.nextCursor == nil, page.unreadableCount == 0 {
                     self.firstPage()
@@ -262,7 +290,9 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
                 self.emptyState.isHidden = !page.sessions.isEmpty
                 self.emptyState.stringValue = page.unreadableCount > 0
                     ? "이 페이지에는 읽을 수 있는 세션이 없어요."
-                    : "저장된 세션이 없어요. 브라우저에서 ‘현재 창 담기’를 실행해 보세요."
+                    : self.section == .single
+                        ? "단일 세션이 없어요. 브라우저에서 ⌥C로 현재 탭을 담아 보세요."
+                        : "저장된 탭 묶음이 없어요. 여러 탭이 열린 창에서 ⌃⌥C로 담아 보세요."
                 if page.unreadableCount > 0 {
                     self.setStatus("\(page.unreadableCount)개 세션 파일을 읽을 수 없어요.", isError: true)
                 }
@@ -285,6 +315,24 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         loadPage()
     }
 
+    @objc private func changeSection(_ sender: NSButton) {
+        let next: SessionSection = sender === singleButton ? .single : .grouped
+        guard section != next else {
+            updateControls()
+            return
+        }
+        section = next
+        showPreview(false)
+        sessions.removeAll()
+        nextCursor = nil
+        table.reloadData()
+        emptyState.stringValue = "세션을 불러오는 중…"
+        emptyState.isHidden = false
+        setStatus("")
+        reload()
+        makeFirstResponder(table)
+    }
+
     @objc private func olderPage() {
         guard let nextCursor else { return }
         cursor = nextCursor
@@ -293,6 +341,13 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
 
     private func updateControls() {
         let canBrowse = !isLoading && !isDeleting && nameEdit == nil && !isSavingName
+        for (button, selected) in [(groupedButton, section == .grouped), (singleButton, section == .single)] {
+            button.state = selected ? .on : .off
+            button.isEnabled = canBrowse
+            button.font = .systemFont(ofSize: selected ? 20 : 15, weight: selected ? .semibold : .regular)
+            button.contentTintColor = selected ? .labelColor : .secondaryLabelColor
+        }
+        table.setAccessibilityLabel(section == .single ? singleButton.title : groupedButton.title)
         latestButton.isEnabled = canBrowse && cursor != nil
         olderButton.isEnabled = canBrowse && nextCursor != nil
         previewButton.isEnabled = canBrowse && selectedSession != nil

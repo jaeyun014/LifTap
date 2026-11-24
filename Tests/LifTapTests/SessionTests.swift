@@ -37,6 +37,25 @@ struct SessionTests {
         }
     }
 
+    @Test func groupedAndSingleSessionsHaveIndependentPages() throws {
+        try withStore { store in
+            let sessions = try (0..<25).map { index in
+                try session(index, tabs: index.isMultiple(of: 2) ? [web] : [web, web])
+            }
+            for item in sessions.reversed() { try store.save(item) }
+
+            for section in [SessionSection.grouped, .single] {
+                let expected = sessions.reversed().filter { SessionSection(tabCount: $0.tabs.count) == section }
+                let first = try store.page(before: nil, section: section)
+                let second = try store.page(before: first.nextCursor, section: section)
+                #expect(first.sessions.count == 10)
+                #expect(first.sessions.map(\.key) + second.sessions.map(\.key) == expected.map(\.key))
+                #expect(second.nextCursor == nil)
+            }
+            #expect(try store.latest().key == sessions[24].key)
+        }
+    }
+
     @Test func emptyAndInternalOnlyCapturesLeaveTheArchiveIntact() throws {
         try withStore { store in
             #expect(try store.page(before: nil).sessions.isEmpty)
