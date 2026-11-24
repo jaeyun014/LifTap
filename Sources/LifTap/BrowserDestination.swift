@@ -11,6 +11,7 @@ struct BrowserDestination {
               bundle.infoDictionary?["CFBundlePackageType"] as? String == "APPL",
               let identifier = bundle.bundleIdentifier,
               let browser = Browser(rawValue: identifier) else { return nil }
+        if browser == .dia, bundle.object(forInfoDictionaryKey: "OSAScriptingDefinition") == nil { return nil }
         self.url = url
         self.browser = browser
     }

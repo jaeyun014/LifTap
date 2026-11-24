@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import ApplicationServices
 import Carbon
 import Darwin
 
@@ -8,9 +10,10 @@ struct RestoreReport: Codable, Sendable {
     var skipped: Int
     var unconfirmed: Int
     var errorCode: Int?
+    var submitted: Int?
 
     var message: String {
-        var parts = ["\(opened)개 열림"]
+        var parts = [submitted.map { "\($0)개 주소 열기를 요청했어요." } ?? "\(opened)개 열림"]
         if skipped > 0 { parts.append("\(skipped)개 건너뜀") }
         if failed > 0 { parts.append("\(failed)개 실패") }
         if unconfirmed > 0 { parts.append("\(unconfirmed)개 결과 미확인") }
@@ -66,19 +69,39 @@ enum BrowserAutomation {
         return tabs
     }
 
-    static func restore(_ session: TabSession, in browser: Browser) throws -> RestoreReport {
+    static func restore(_ session: TabSession, in browser: Browser, applicationURL: URL) throws -> RestoreReport {
         let urls = session.tabs.compactMap { $0.isTransferable ? $0.url : nil }
         let skipped = session.tabs.count - urls.count
         guard !urls.isEmpty else {
             return RestoreReport(opened: 0, failed: 0, skipped: skipped, unconfirmed: 0)
         }
+        let single = SessionSection(tabCount: session.tabs.count) == .single
+        if browser == .firefox {
+            guard let executable = Bundle(url: applicationURL)?.executableURL else {
+                throw LifTapError.browserUnavailable(browser)
+            }
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = firefoxArguments(urls, single: single)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            return RestoreReport(opened: 0, failed: 0, skipped: skipped, unconfirmed: 0, submitted: urls.count)
+        }
         let response = try run(Request(browser: browser, urls: urls,
-                                       preferExistingWindow: SessionSection(tabCount: session.tabs.count) == .single))
+                                       preferExistingWindow: single))
         guard var report = response.report,
               report.opened + report.failed + report.unconfirmed == urls.count
         else { throw LifTapError.workerFailed }
         report.skipped = skipped
         return report
+    }
+
+    static func firefoxArguments(_ urls: [String], single: Bool) -> [String] {
+        if single { return ["--new-tab"] + urls }
+        if urls.count == 1 { return ["--new-window"] + urls }
+        // Firefox's general URL handler groups multiple URL arguments in a new window.
+        return urls
     }
 
     static func error(for code: Int?, browser: Browser) -> LifTapError {
@@ -88,6 +111,7 @@ enum BrowserAutomation {
         case -600, -609: .browserUnavailable(browser)
         case -10001: .noWindow
         case -10002: .newWindowNotIdentified(browser)
+        case -10003: .diaAccessibilityRequired
         default: .browserFailed(browser, code)
         }
     }
@@ -132,6 +156,12 @@ enum BrowserAutomation {
     static func serve() throws {
         let request = try JSONDecoder().decode(Request.self,
                                                from: FileHandle.standardInput.readDataToEndOfFile())
+        guard request.browser.supportsCapture else { throw LifTapError.restoreOnlyBrowser(request.browser) }
+        if request.browser == .dia, request.closeTabs != nil,
+           NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Browser.dia.rawValue {
+            try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(Response(closed: false)))
+            return
+        }
         let script: String
         let handler: String
         let args = NSAppleEventDescriptor.list()
@@ -166,8 +196,19 @@ enum BrowserAutomation {
             for (index, url) in urls.enumerated() {
                 list.insert(NSAppleEventDescriptor(string: url), at: index + 1)
             }
+            let single = request.preferExistingWindow == true && urls.count == 1
+            var diaWindowID = ""
+            if request.browser == .dia {
+                do {
+                    diaWindowID = try diaRestoreWindow(single: single)
+                } catch let failure as DiaWindowError {
+                    try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(Response(errorCode: failure.code)))
+                    return
+                }
+            }
             args.insert(list, at: 1)
-            args.insert(NSAppleEventDescriptor(boolean: request.preferExistingWindow == true && urls.count == 1), at: 2)
+            args.insert(NSAppleEventDescriptor(boolean: single), at: 2)
+            args.insert(NSAppleEventDescriptor(string: diaWindowID), at: 3)
         } else {
             script = captureScript(for: request.browser, scope: request.captureScope ?? .window)
             handler = "capturetabs"
@@ -226,6 +267,69 @@ enum BrowserAutomation {
         try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(response))
     }
 
+    private struct DiaWindowError: Error {
+        let code: Int
+    }
+
+    private static func diaRestoreWindow(single: Bool) throws -> String {
+        let script = NSAppleScript(source: """
+            with timeout of 5 seconds
+                tell application id "\(Browser.dia.rawValue)" to get id of every window
+            end timeout
+            """)
+        func windowIDs() throws -> [String] {
+            var errorInfo: NSDictionary?
+            guard let ids = script?.executeAndReturnError(&errorInfo), ids.descriptorType == DescType(typeAEList) else {
+                throw DiaWindowError(code: errorInfo?[NSAppleScript.errorNumber] as? Int ?? -10002)
+            }
+            return (0..<ids.numberOfItems).compactMap { ids.atIndex($0 + 1)?.stringValue }
+                .filter { !$0.isEmpty }
+        }
+
+        let previous = try windowIDs()
+        if single, let first = previous.first { return first }
+        let prompt = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(prompt) else { throw DiaWindowError(code: -10003) }
+        guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: Browser.dia.rawValue).first
+        else { throw DiaWindowError(code: -600) }
+        running.activate()
+        let app = AXUIElementCreateApplication(running.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 1)
+
+        func attribute<Value>(_ key: String, of element: AXUIElement) -> Value? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else { return nil }
+            return value as? Value
+        }
+        guard let menuBar: AXUIElement = attribute(kAXMenuBarAttribute, of: app),
+              let menus: [AXUIElement] = attribute(kAXChildrenAttribute, of: menuBar) else {
+            throw DiaWindowError(code: -10002)
+        }
+        // Command-N identifies New Window regardless of Dia's menu language.
+        let commands: [AXUIElement] = menus.flatMap { item -> [AXUIElement] in
+            let children: [AXUIElement] = attribute(kAXChildrenAttribute, of: item) ?? []
+            return children.flatMap { attribute(kAXChildrenAttribute, of: $0) ?? [] }
+        }
+        let matching = commands.filter { command in
+            let enabled: Bool? = attribute(kAXEnabledAttribute, of: command)
+            let key: String? = attribute(kAXMenuItemCmdCharAttribute, of: command)
+            let modifiers: Int? = attribute(kAXMenuItemCmdModifiersAttribute, of: command)
+            return enabled == true && key?.lowercased() == "n" && modifiers == 0
+        }
+        guard matching.count == 1, let command = matching.first,
+              AXUIElementPerformAction(command, kAXPressAction as CFString) == .success else {
+            throw DiaWindowError(code: -10002)
+        }
+        let previousIDs = Set(previous)
+        for _ in 0..<20 {
+            let newIDs = try windowIDs().filter { !previousIDs.contains($0) }
+            if newIDs.count == 1, let id = newIDs.first { return id }
+            if newIDs.count > 1 { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw DiaWindowError(code: -10002)
+    }
+
     static func captureScript(for browser: Browser, scope: CaptureScope) -> String {
         let titleProperty = browser == .safari ? "name" : "title"
         let snapshot: String
@@ -278,6 +382,7 @@ enum BrowserAutomation {
     private static func cutScript(for browser: Browser) -> String {
         let tabProperty = browser == .safari ? "current tab" : "active tab"
         let titleProperty = browser == .safari ? "name" : "title"
+        let requireFrontmost = browser == .dia ? "" : "if not frontmost then return false"
         let identity = browser == .safari
             ? "{(index of chosenTab) as text, (pid of chosenTab) as text, tabCount as text}"
             : "{(id of chosenTab) as text, \"\", \"\"}"
@@ -299,7 +404,7 @@ enum BrowserAutomation {
         on closeCapturedTabs(expected, wholeWindow)
             with timeout of 12 seconds
                 tell application id "\(browser.rawValue)"
-                    if not frontmost then return false
+                    \(requireFrontmost)
                     set windowID to id of front window
                     if (windowID as text) is not item 1 of item 1 of expected then return false
                     set chosenWindow to window id windowID
@@ -313,7 +418,8 @@ enum BrowserAutomation {
                     considering case
                         if actual is not equal to expected then return false
                     end considering
-                    if not frontmost or (id of front window) is not windowID then return false
+                    \(requireFrontmost)
+                    if (id of front window) is not windowID then return false
                     if wholeWindow then
                         if (count of tabs of chosenWindow) is not (count of expected) then return false
                         close chosenWindow
@@ -357,14 +463,20 @@ enum BrowserAutomation {
     static func restoreScript(for browser: Browser) -> String {
         let createWindow: String
         let raiseWindow: String
-        let selectAddedTab = browser == .safari
-            ? "set current tab to addedTab"
-            : "set active tab index to (count of tabs)"
+        let selectAddedTab: String
         switch browser {
         case .chrome, .aside:
             createWindow = "set targetID to id of (make new window)"
             raiseWindow = ""
+            selectAddedTab = "set active tab index to (count of tabs)"
+        case .dia:
+            createWindow = "error number -10002"
+            raiseWindow = ""
+            selectAddedTab = "focus addedTab"
+        case .firefox:
+            preconditionFailure("Firefox restores through its command-line interface")
         case .safari:
+            selectAddedTab = "set current tab to addedTab"
             // Safari returns a document, not a window. Only use an unambiguous new window ID.
             createWindow = """
             set existingIDs to get id of every window
@@ -388,7 +500,7 @@ enum BrowserAutomation {
             """
         }
         return """
-        on restoreTabs(addresses, preferExistingWindow)
+        on restoreTabs(addresses, preferExistingWindow, diaWindowID)
             set openedCount to 0
             set failedCount to 0
             set unknownCount to 0
@@ -398,7 +510,10 @@ enum BrowserAutomation {
             with timeout of 12 seconds
                 tell application id "\(browser.rawValue)"
                     try
-                        if preferExistingWindow and (count of windows) > 0 then
+                        if diaWindowID is not "" then
+                            set targetID to diaWindowID
+                            set reuseInitialTab to false
+                        else if preferExistingWindow and (count of windows) > 0 then
                             set targetID to id of front window
                             set reuseInitialTab to false
                         else

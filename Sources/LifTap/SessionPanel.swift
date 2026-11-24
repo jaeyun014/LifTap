@@ -443,7 +443,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         picker.beginSheetModal(for: self) { [weak self] response in
             guard response == .OK, let self, let url = picker.url else { return }
             guard let browser = BrowserDestination(url: url) else {
-                self.setStatus("Chrome, Safari 또는 Aside를 선택해 주세요.", isError: true)
+                self.setStatus("LifTap이 지원하는 브라우저를 선택해 주세요.", isError: true)
                 return
             }
             if !self.browsers.contains(where: { $0.url == url }) { self.browsers.append(browser) }

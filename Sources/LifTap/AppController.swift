@@ -68,6 +68,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                 announce(LifTapError.unsupportedBrowser.localizedDescription, isError: true)
                 return
             }
+            guard browser.supportsCapture else {
+                announce(LifTapError.restoreOnlyBrowser(browser).localizedDescription, isError: true)
+                return
+            }
             let capturedAt = Date()
             let scope: CaptureScope = command == .captureTab || command == .cutTab ? .activeTab : .window
             let store = store
@@ -127,14 +131,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func restore(key: String?, in browser: Browser) {
-        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.rawValue) != nil else {
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.rawValue) else {
             announce(LifTapError.browserUnavailable(browser).localizedDescription, isError: true)
             return
         }
         let store = store
         perform {
             let session = try key.map(store.load) ?? store.latest()
-            return .restored(try BrowserAutomation.restore(session, in: browser), browser)
+            return .restored(try BrowserAutomation.restore(session, in: browser, applicationURL: applicationURL), browser)
         }
     }
 
@@ -169,7 +173,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 case let .restored(report, browser):
                     let issue = report.errorCode.map { BrowserAutomation.error(for: $0, browser: browser).localizedDescription }
                     let text = [report.message, issue].compactMap { $0 }.joined(separator: "\n")
-                    if report.opened > 0 {
+                    if report.opened > 0 || report.submitted != nil {
                         if report.failed == 0 && report.unconfirmed == 0 { panel?.close() }
                         NSRunningApplication.runningApplications(withBundleIdentifier: browser.rawValue).first?.activate()
                         feedback.show(text, relativeTo: statusItem?.button, isError: issue != nil)

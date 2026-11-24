@@ -4,14 +4,20 @@ enum Browser: String, CaseIterable, Codable, Sendable {
     case chrome = "com.google.Chrome"
     case safari = "com.apple.Safari"
     case aside = "at.studio.AsideBrowser"
+    case firefox = "org.mozilla.firefox"
+    case dia = "company.thebrowser.dia"
 
     var name: String {
         switch self {
         case .chrome: "Google Chrome"
         case .safari: "Safari"
         case .aside: "Aside"
+        case .firefox: "Firefox"
+        case .dia: "Dia"
         }
     }
+
+    var supportsCapture: Bool { self != .firefox }
 }
 
 struct BrowserTab: Codable, Equatable, Sendable {
@@ -221,6 +227,8 @@ enum LifTapError: LocalizedError {
     case windowHasUnrestorableTabs
     case emptySessionName
     case unsupportedBrowser, noWindow, noTransferableTabs, noSessions
+    case restoreOnlyBrowser(Browser)
+    case diaAccessibilityRequired
     case browserUnavailable(Browser), permissionDenied(Browser), timedOut(Browser), newWindowNotIdentified(Browser)
     case browserFailed(Browser, Int?), workerFailed, storageRead, storageWrite, storageDelete
 
@@ -228,7 +236,9 @@ enum LifTapError: LocalizedError {
         switch self {
         case .windowHasUnrestorableTabs: "복원할 수 없는 탭이 있어 창을 그대로 두었어요."
         case .emptySessionName: "세션 이름을 입력해 주세요."
-        case .unsupportedBrowser: "Chrome, Safari 또는 Aside 창을 활성화한 뒤 다시 담아 주세요."
+        case .unsupportedBrowser: "탭 담기를 지원하는 브라우저 창을 활성화한 뒤 다시 시도해 주세요."
+        case let .restoreOnlyBrowser(browser): "\(browser.name)에서는 저장된 세션을 열 수 있어요. 탭 담기와 잘라내기는 지원하지 않아요."
+        case .diaAccessibilityRequired: "Dia에서 새 창을 열려면 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 LifTap을 허용해 주세요."
         case .noWindow: "현재 브라우저에 담을 수 있는 창이 없어요."
         case .noTransferableTabs: "담을 수 있는 웹 주소(HTTP 또는 HTTPS)가 없어요."
         case .noSessions: "저장한 세션이 없어요. 브라우저에서 먼저 탭을 담아 주세요."

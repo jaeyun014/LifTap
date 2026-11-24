@@ -129,6 +129,13 @@ struct SessionTests {
         }
     }
 
+    @Test func firefoxRestoresSingleTabsAndGroupedSessionsWithDifferentArguments() {
+        let addresses = [web.url, "https://example.test/other"]
+        #expect(BrowserAutomation.firefoxArguments([addresses[0]], single: true) == ["--new-tab", addresses[0]])
+        #expect(BrowserAutomation.firefoxArguments([addresses[0]], single: false) == ["--new-window", addresses[0]])
+        #expect(BrowserAutomation.firefoxArguments(addresses, single: false) == addresses)
+    }
+
     @Test func transferRequiresAWebSchemeAndHost() {
         let supported = ["https://example.test", "HTTP://localhost:8000/a"]
         let unsupported = ["chrome://settings/", "about:blank", "safari-extension://id/path",
