@@ -700,16 +700,27 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         previewButton.title = "미리보기 닫기"
         let store = store
         previewTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) {
                 Result {
-                    try store.load(key).tabs.reduce(into: "") { text, tab in
+                    try Task.checkCancellation()
+                    let session = try store.load(key)
+                    try Task.checkCancellation()
+                    return try session.tabs.reduce(into: "") { text, tab in
+                        try Task.checkCancellation()
                         let title = tab.title.isEmpty ? "제목 없음" : tab.title
                         if !text.isEmpty { text += "\n\n" }
                         text += title + "\n" + tab.url
                     }
                 }
-            }.value
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
             guard !Task.isCancelled, let self else { return }
+            self.previewTask = nil
             switch result {
             case let .success(text): self.preview.string = text
             case let .failure(error): self.preview.string = error.localizedDescription
