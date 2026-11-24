@@ -19,20 +19,40 @@ struct RestoreReport: Codable, Sendable {
 }
 
 enum CaptureScope: String, Codable, Sendable {
-    case window, activeTab
+    case window, activeTab, cutTab
 }
 
 enum BrowserAutomation {
+    struct CutTab: Codable, Sendable {
+        let tab: BrowserTab
+        let identity: [String]
+    }
+
     private struct Request: Codable {
         let browser: Browser
         let urls: [String]? // nil captures from the front window
         var captureScope: CaptureScope? = nil
+        var closeTab: CutTab? = nil
     }
 
     private struct Response: Codable {
         var tabs: [BrowserTab]?
         var report: RestoreReport?
         var errorCode: Int?
+        var cutTab: CutTab?
+        var closed: Bool?
+    }
+
+    static func cutCandidate(in browser: Browser) throws -> CutTab {
+        let response = try run(Request(browser: browser, urls: nil, captureScope: .cutTab))
+        guard let candidate = response.cutTab, candidate.tab.isTransferable else {
+            throw LifTapError.noTransferableTabs
+        }
+        return candidate
+    }
+
+    static func close(_ candidate: CutTab, in browser: Browser) throws -> Bool {
+        try run(Request(browser: browser, urls: nil, closeTab: candidate)).closed == true
     }
 
     static func capture(in browser: Browser, scope: CaptureScope) throws -> [BrowserTab] {
@@ -106,12 +126,22 @@ enum BrowserAutomation {
     static func serve() throws {
         let request = try JSONDecoder().decode(Request.self,
                                                from: FileHandle.standardInput.readDataToEndOfFile())
-        let script = request.urls == nil
-            ? captureScript(for: request.browser, scope: request.captureScope ?? .window)
-            : restoreScript(for: request.browser)
-        let handler = request.urls == nil ? "capturetabs" : "restoretabs"
+        let script: String
+        let handler: String
         let args = NSAppleEventDescriptor.list()
-        if let urls = request.urls {
+        if let candidate = request.closeTab {
+            guard candidate.tab.isTransferable, candidate.identity.count == 4 else { throw LifTapError.workerFailed }
+            script = cutScript(for: request.browser)
+            handler = "closecapturedtab"
+            let expected = candidate.identity + [candidate.tab.url, candidate.tab.title]
+            let items = NSAppleEventDescriptor.list()
+            for (index, value) in expected.enumerated() {
+                items.insert(NSAppleEventDescriptor(string: value), at: index + 1)
+            }
+            args.insert(items, at: 1)
+        } else if let urls = request.urls {
+            script = restoreScript(for: request.browser)
+            handler = "restoretabs"
             guard !urls.isEmpty, urls.allSatisfy({ BrowserTab(title: "", url: $0).isTransferable })
             else { throw LifTapError.workerFailed }
             let list = NSAppleEventDescriptor.list()
@@ -119,6 +149,12 @@ enum BrowserAutomation {
                 list.insert(NSAppleEventDescriptor(string: url), at: index + 1)
             }
             args.insert(list, at: 1)
+        } else if request.captureScope == .cutTab {
+            script = cutScript(for: request.browser)
+            handler = "inspectcurrenttab"
+        } else {
+            script = captureScript(for: request.browser, scope: request.captureScope ?? .window)
+            handler = "capturetabs"
         }
         let event = NSAppleEventDescriptor(eventClass: AEEventClass(kASAppleScriptSuite),
                                            eventID: AEEventID(kASSubroutineEvent),
@@ -133,6 +169,14 @@ enum BrowserAutomation {
         let response: Response
         if let errorInfo {
             response = Response(errorCode: errorInfo[NSAppleScript.errorNumber] as? Int ?? -1)
+        } else if request.closeTab != nil {
+            response = Response(closed: value?.booleanValue)
+        } else if request.captureScope == .cutTab {
+            guard let value, value.numberOfItems == 6 else { throw LifTapError.workerFailed }
+            let fields = (1...6).compactMap { value.atIndex($0)?.stringValue }
+            guard fields.count == 6 else { throw LifTapError.workerFailed }
+            response = Response(cutTab: CutTab(tab: BrowserTab(title: fields[5], url: fields[4]),
+                                               identity: Array(fields.prefix(4))))
         } else if let urls = request.urls {
             guard let value, value.numberOfItems == 4,
                   let opened = value.atIndex(1)?.int32Value,
@@ -165,7 +209,7 @@ enum BrowserAutomation {
         switch scope {
         case .window:
             snapshot = "set snapshot to get every tab of window id sourceID"
-        case .activeTab:
+        case .activeTab, .cutTab:
             let selectedTabProperty = browser == .safari ? "current tab" : "active tab"
             snapshot = """
             set selectedTab to get \(selectedTabProperty) of window id sourceID
@@ -205,6 +249,58 @@ enum BrowserAutomation {
                 end tell
             end timeout
         end captureTabs
+        """
+    }
+
+    private static func cutScript(for browser: Browser) -> String {
+        let tabProperty = browser == .safari ? "current tab" : "active tab"
+        let titleProperty = browser == .safari ? "name" : "title"
+        let identity = browser == .safari
+            ? "{(index of chosenTab) as text, (pid of chosenTab) as text, (count of tabs of chosenWindow) as text}"
+            : "{(id of chosenTab) as text, \"\", \"\"}"
+        return """
+        on inspectCurrentTab()
+            with timeout of 12 seconds
+                tell application id "\(browser.rawValue)"
+                    try
+                        set windowID to id of front window
+                    on error errorText number errorCode
+                        if errorCode is -1728 or errorCode is -1719 then error number -10001
+                        error errorText number errorCode
+                    end try
+                    set chosenWindow to window id windowID
+                    set chosenTab to get \(tabProperty) of chosenWindow
+                    return my describeTab(windowID, chosenWindow, chosenTab)
+                end tell
+            end timeout
+        end inspectCurrentTab
+
+        on closeCapturedTab(expected)
+            with timeout of 12 seconds
+                tell application id "\(browser.rawValue)"
+                    if not frontmost then return false
+                    set windowID to id of front window
+                    set chosenWindow to window id windowID
+                    set chosenTab to get \(tabProperty) of chosenWindow
+                    set actual to my describeTab(windowID, chosenWindow, chosenTab)
+                    considering case
+                        if actual is not equal to expected then return false
+                    end considering
+                    close chosenTab
+                    return true
+                end tell
+            end timeout
+        end closeCapturedTab
+
+        on describeTab(windowID, chosenWindow, chosenTab)
+            tell application id "\(browser.rawValue)"
+                set tabURL to URL of chosenTab
+                set tabTitle to \(titleProperty) of chosenTab
+                if tabURL is missing value then set tabURL to ""
+                if tabTitle is missing value then set tabTitle to ""
+                return {(windowID as text)} & \(identity) & {tabURL, tabTitle}
+            end tell
+        end describeTab
         """
     }
 

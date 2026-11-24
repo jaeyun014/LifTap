@@ -63,7 +63,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let browser = frontmost?.bundleIdentifier.flatMap(Browser.init(rawValue:))
         switch command {
-        case .capture, .captureTab:
+        case .capture, .captureTab, .cutTab:
             guard let browser else {
                 announce(LifTapError.unsupportedBrowser.localizedDescription, isError: true)
                 return
@@ -71,7 +71,19 @@ final class AppController: NSObject, NSApplicationDelegate {
             let capturedAt = Date()
             let scope: CaptureScope = command == .captureTab ? .activeTab : .window
             let store = store
+            let cut = command == .cutTab
             perform {
+                if cut {
+                    let candidate = try BrowserAutomation.cutCandidate(in: browser)
+                    let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: [candidate.tab])
+                    try store.save(session)
+                    do {
+                        let closed = try BrowserAutomation.close(candidate, in: browser)
+                        return .cut(closed ? "현재 탭을 잘라냈어요." : "탭을 저장했어요. 원본 탭이 바뀌어 닫지 않았어요.", false)
+                    } catch {
+                        return .cut("탭을 저장했어요. 원본 탭 닫기 결과를 확인해 주세요.", true)
+                    }
+                }
                 let tabs = try BrowserAutomation.capture(in: browser, scope: scope)
                 let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: tabs)
                 try store.save(session)
@@ -126,6 +138,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private enum OperationResult: Sendable {
         case captured(Int)
+        case cut(String, Bool)
         case restored(RestoreReport, Browser)
     }
 
@@ -148,6 +161,9 @@ final class AppController: NSObject, NSApplicationDelegate {
                 case let .captured(count):
                     panel?.reload()
                     announce("\(count)개 탭을 저장했어요.")
+                case let .cut(message, isError):
+                    panel?.reload()
+                    announce(message, isError: isError)
                 case let .restored(report, browser):
                     let issue = report.errorCode.map { BrowserAutomation.error(for: $0, browser: browser).localizedDescription }
                     let text = [report.message, issue].compactMap { $0 }.joined(separator: "\n")
