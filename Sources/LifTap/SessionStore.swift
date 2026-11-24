@@ -218,6 +218,7 @@ struct SessionStore: Sendable {
 }
 
 enum LifTapError: LocalizedError {
+    case windowHasUnrestorableTabs
     case emptySessionName
     case unsupportedBrowser, noWindow, noTransferableTabs, noSessions
     case browserUnavailable(Browser), permissionDenied(Browser), timedOut(Browser), newWindowNotIdentified(Browser)
@@ -225,6 +226,7 @@ enum LifTapError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .windowHasUnrestorableTabs: "복원할 수 없는 탭이 있어 창을 그대로 두었어요."
         case .emptySessionName: "세션 이름을 입력해 주세요."
         case .unsupportedBrowser: "Chrome, Safari 또는 Aside 창을 활성화한 뒤 다시 담아 주세요."
         case .noWindow: "현재 브라우저에 담을 수 있는 창이 없어요."

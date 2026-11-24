@@ -63,25 +63,27 @@ final class AppController: NSObject, NSApplicationDelegate {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let browser = frontmost?.bundleIdentifier.flatMap(Browser.init(rawValue:))
         switch command {
-        case .capture, .captureTab, .cutTab:
+        case .capture, .captureTab, .cutTab, .cutWindow:
             guard let browser else {
                 announce(LifTapError.unsupportedBrowser.localizedDescription, isError: true)
                 return
             }
             let capturedAt = Date()
-            let scope: CaptureScope = command == .captureTab ? .activeTab : .window
+            let scope: CaptureScope = command == .captureTab || command == .cutTab ? .activeTab : .window
             let store = store
-            let cut = command == .cutTab
+            let cut = command == .cutTab || command == .cutWindow
             perform {
                 if cut {
-                    let candidate = try BrowserAutomation.cutCandidate(in: browser)
-                    let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: [candidate.tab])
+                    let candidates = try BrowserAutomation.cutCandidates(in: browser, scope: scope)
+                    let session = try TabSession(browser: browser, createdAt: capturedAt, tabs: candidates.map(\.tab))
                     try store.save(session)
+                    let source = scope == .window ? "원본 창" : "원본 탭"
                     do {
-                        let closed = try BrowserAutomation.close(candidate, in: browser)
-                        return .cut(closed ? "현재 탭을 잘라냈어요." : "탭을 저장했어요. 원본 탭이 바뀌어 닫지 않았어요.", false)
+                        let closed = try BrowserAutomation.close(candidates, in: browser, scope: scope)
+                        return .cut(closed ? "\(candidates.count)개 탭을 잘라냈어요."
+                                    : "탭을 저장했어요. \(source)의 상태가 바뀌어 닫지 않았어요.", false)
                     } catch {
-                        return .cut("탭을 저장했어요. 원본 탭 닫기 결과를 확인해 주세요.", true)
+                        return .cut("탭을 저장했어요. \(source) 닫기 결과를 확인해 주세요.", true)
                     }
                 }
                 let tabs = try BrowserAutomation.capture(in: browser, scope: scope)

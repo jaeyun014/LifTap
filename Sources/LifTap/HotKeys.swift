@@ -1,19 +1,19 @@
 import Carbon
 
 enum Command: UInt32, CaseIterable {
-    case capture = 1, restoreLatest, showSessions, captureTab, cutTab
+    case capture = 1, restoreLatest, showSessions, captureTab, cutTab, cutWindow
 
     var keyCode: Int {
         switch self {
         case .capture, .captureTab: kVK_ANSI_C
-        case .cutTab: kVK_ANSI_X
+        case .cutTab, .cutWindow: kVK_ANSI_X
         case .restoreLatest: kVK_ANSI_V
         case .showSessions: kVK_Space
         }
     }
 
     var modifiers: UInt32 {
-        UInt32(self == .captureTab ? optionKey : controlKey | optionKey)
+        UInt32(self == .captureTab || self == .cutTab ? optionKey : controlKey | optionKey)
     }
 
     var title: String {
@@ -21,6 +21,7 @@ enum Command: UInt32, CaseIterable {
         case .capture: "현재 창 담기"
         case .captureTab: "현재 탭 담기"
         case .cutTab: "현재 탭 잘라내기"
+        case .cutWindow: "현재 창의 모든 탭 잘라내기"
         case .restoreLatest: "마지막 세션 열기"
         case .showSessions: "세션 목록 보기"
         }
@@ -30,7 +31,8 @@ enum Command: UInt32, CaseIterable {
         switch self {
         case .capture: "⌃⌥C"
         case .captureTab: "⌥C"
-        case .cutTab: "⌃⌥X"
+        case .cutTab: "⌥X"
+        case .cutWindow: "⌃⌥X"
         case .restoreLatest: "⌃⌥V"
         case .showSessions: "⌃⌥Space"
         }
