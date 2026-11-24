@@ -56,6 +56,45 @@ struct SessionTests {
         }
     }
 
+    @Test func filteredPageSkipsContentsOfOtherSectionsAndOlderPages() throws {
+        try withStore { store in
+            let grouped = try (0..<12).map { try session($0, tabs: [web, web]) }
+            let single = try session(12, tabs: [web])
+            for item in grouped + [single] { try store.save(item) }
+            for item in [grouped[1], single] {
+                try Data("broken".utf8).write(to: store.directory.appendingPathComponent(item.key))
+            }
+
+            let first = try store.page(before: nil, section: .grouped)
+            #expect(first.sessions.map(\.key) == Array(grouped.suffix(10).reversed()).map(\.key))
+            #expect(first.unreadableCount == 0)
+            let cursor = try #require(first.nextCursor)
+            let second = try store.page(before: cursor, section: .grouped)
+            #expect(second.sessions.map(\.key) == [grouped[0].key])
+            #expect(second.unreadableCount == 1)
+        }
+    }
+
+    @Test func legacyFilesWorkAlongsideNewFilesWithoutMigration() throws {
+        try withStore { store in
+            let legacy = try session(1, tabs: [web])
+            let newerFormat = try session(0, tabs: [web])
+            try store.save(newerFormat)
+            let stamp = Int64(legacy.createdAt.timeIntervalSince1970 * 1_000_000)
+            let legacyKey = String(format: "%020lld", stamp) + "-" + legacy.id.uuidString + ".json"
+            let legacyFile = store.directory.appendingPathComponent(legacyKey)
+            try JSONEncoder().encode(legacy).write(to: legacyFile)
+
+            #expect(try store.latest().id == legacy.id)
+            #expect(try store.page(before: nil, section: .single).sessions.map(\.key) == [legacyKey, newerFormat.key])
+            #expect(try store.page(before: nil, section: .grouped).sessions.isEmpty)
+            #expect(try store.rename(legacyKey, to: "이전 세션").key == legacyKey)
+            #expect(try store.load(legacyKey).name == "이전 세션")
+            try store.delete(legacyKey)
+            #expect(try store.latest().id == newerFormat.id)
+        }
+    }
+
     @Test func emptyAndInternalOnlyCapturesLeaveTheArchiveIntact() throws {
         try withStore { store in
             #expect(try store.page(before: nil).sessions.isEmpty)

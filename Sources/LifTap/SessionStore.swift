@@ -66,11 +66,16 @@ struct TabSession: Codable, Sendable {
     }
 
     var key: String {
+        let section = SessionSection(tabCount: tabs.count)
+        return String(legacyKey.dropLast(5)) + "-" + section.rawValue + ".json"
+    }
+
+    fileprivate var legacyKey: String {
         let microseconds = Int64(createdAt.timeIntervalSince1970 * 1_000_000)
         return String(format: "%020lld", microseconds) + "-" + id.uuidString + ".json"
     }
 
-    var summary: SessionSummary {
+    fileprivate func summary(for key: String) -> SessionSummary {
         SessionSummary(key: key, name: name, sourceBrowser: sourceBrowser,
                        createdAt: createdAt, tabCount: tabs.count)
     }
@@ -82,8 +87,9 @@ struct SessionPage: Sendable {
     var unreadableCount = 0
 }
 
-enum SessionSection: Sendable {
-    case grouped, single
+enum SessionSection: String, Sendable {
+    case grouped = "g"
+    case single = "s"
 
     init(tabCount: Int) { self = tabCount == 1 ? .single : .grouped }
 }
@@ -95,11 +101,15 @@ struct SessionStore: Sendable {
         .appending(path: "LifTap/Sessions", directoryHint: .isDirectory))
 
     func save(_ session: TabSession) throws {
+        try write(session, to: session.key)
+    }
+
+    private func write(_ session: TabSession, to key: String) throws {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             let data = try JSONEncoder().encode(session)
-            try data.write(to: directory.appendingPathComponent(session.key), options: .atomic)
+            try data.write(to: directory.appendingPathComponent(key), options: .atomic)
         } catch {
             throw LifTapError.storageWrite
         }
@@ -110,7 +120,8 @@ struct SessionStore: Sendable {
         do {
             let data = try Data(contentsOf: directory.appendingPathComponent(key))
             let session = try JSONDecoder().decode(TabSession.self, from: data)
-            guard session.schemaVersion == TabSession.currentSchemaVersion, session.key == key else {
+            guard session.schemaVersion == TabSession.currentSchemaVersion,
+                  session.key == key || session.legacyKey == key else {
                 throw LifTapError.storageRead
             }
             return session
@@ -125,9 +136,9 @@ struct SessionStore: Sendable {
         guard !name.isEmpty else { throw LifTapError.emptySessionName }
         if session.name != name {
             session.name = name
-            try save(session)
+            try write(session, to: key)
         }
-        return session.summary
+        return session.summary(for: key)
     }
 
     func delete(_ key: String) throws {
@@ -147,50 +158,39 @@ struct SessionStore: Sendable {
     }
 
     func latest() throws -> TabSession {
-        guard let key = try newestKeys(limit: 1, before: nil).first else {
+        var unreadableCount = 0
+        guard let entry = try newestEntries(limit: 1, before: nil, section: nil,
+                                           unreadableCount: &unreadableCount).first else {
             throw LifTapError.noSessions
         }
-        return try load(key)
+        return try load(entry.key)
     }
 
     func page(before: String?, section: SessionSection? = nil) throws -> SessionPage {
-        if let section {
-            var result = SessionPage()
-            let entries = try newestEntries(limit: 11, before: before) { key -> SessionSummary? in
-                do {
-                    let summary = try autoreleasepool { try load(key).summary }
-                    return SessionSection(tabCount: summary.tabCount) == section ? summary : nil
-                } catch {
-                    result.unreadableCount += 1
-                    return nil
-                }
-            }
-            result.sessions = entries.prefix(10).map(\.value)
-            if entries.count == 11 { result.nextCursor = entries[9].key }
-            return result
-        }
-        let keys = try newestKeys(limit: 11, before: before)
         var result = SessionPage()
-        for key in keys.prefix(10) {
+        let entries = try newestEntries(limit: 11, before: before, section: section,
+                                        unreadableCount: &result.unreadableCount)
+        for entry in entries.prefix(10) {
             do {
-                let summary = try autoreleasepool { try load(key).summary }
+                let summary = try entry.summary ?? autoreleasepool { try load(entry.key).summary(for: entry.key) }
                 result.sessions.append(summary)
             } catch {
                 result.unreadableCount += 1
             }
         }
-        if keys.count == 11 { result.nextCursor = keys[9] }
+        if entries.count == 11 { result.nextCursor = entries[9].key }
         return result
     }
 
-    private func newestKeys(limit: Int, before: String?) throws -> [String] {
-        try newestEntries(limit: limit, before: before) { $0 }.map(\.key)
+    private struct ListEntry {
+        let key: String
+        let summary: SessionSummary?
     }
 
-    private func newestEntries<Value>(
-        limit: Int, before: String?, read: (String) -> Value?
-    ) throws -> [(key: String, value: Value)] {
-        var matches: [(key: String, value: Value)] = []
+    private func newestEntries(
+        limit: Int, before: String?, section: SessionSection?, unreadableCount: inout Int
+    ) throws -> [ListEntry] {
+        var matches: [ListEntry] = []
         var listingError: NSError?
         let entries = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [],
                                                      options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]) { _, error in
@@ -202,8 +202,25 @@ struct SessionStore: Sendable {
         while let key = autoreleasepool(invoking: { (entries.nextObject() as? URL)?.lastPathComponent }) {
             guard Self.isSessionKey(key), before.map({ key < $0 }) ?? true else { continue }
             let index = matches.firstIndex { $0.key < key } ?? matches.endIndex
-            guard index < limit, let value = read(key) else { continue }
-            matches.insert((key, value), at: index)
+            guard index < limit else { continue }
+
+            var summary: SessionSummary?
+            if let section {
+                if let storedSection = Self.section(in: key) {
+                    guard storedSection == section else { continue }
+                } else {
+                    // Older filenames have no section marker.
+                    do {
+                        let legacySummary = try autoreleasepool { try load(key).summary(for: key) }
+                        guard SessionSection(tabCount: legacySummary.tabCount) == section else { continue }
+                        summary = legacySummary
+                    } catch {
+                        unreadableCount += 1
+                        continue
+                    }
+                }
+            }
+            matches.insert(ListEntry(key: key, summary: summary), at: index)
             if matches.count > limit { matches.removeLast() }
         }
         if let listingError {
@@ -214,12 +231,18 @@ struct SessionStore: Sendable {
         return matches
     }
 
+    private static func section(in key: String) -> SessionSection? {
+        guard key.utf8.count == 64, key.dropLast(6).last == "-" else { return nil }
+        return SessionSection(rawValue: String(key.dropLast(5).suffix(1)))
+    }
+
     private static func isSessionKey(_ key: String) -> Bool {
-        guard key.utf8.count == 62, key.hasSuffix(".json"), !key.contains("/") else { return false }
+        guard key.hasSuffix(".json"), !key.contains("/"),
+              key.utf8.count == 62 || section(in: key) != nil else { return false }
         let stamp = key.prefix(20)
         return stamp.utf8.allSatisfy { (48...57).contains($0) }
             && key.dropFirst(20).first == "-"
-            && UUID(uuidString: String(key.dropFirst(21).dropLast(5))) != nil
+            && UUID(uuidString: String(key.dropFirst(21).prefix(36))) != nil
     }
 }
 
