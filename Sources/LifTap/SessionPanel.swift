@@ -208,7 +208,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         openButton.action = #selector(openSelection)
         openButton.isBordered = false
         openButton.font = .systemFont(ofSize: 13, weight: .semibold)
-        openButton.contentTintColor = NSColor(srgbRed: 0.08, green: 0.19, blue: 0.32, alpha: 1)
+        openButton.contentTintColor = NSColor(white: 0.14, alpha: 1)
         openButton.image = NSImage(systemSymbolName: "arrow.up.right", accessibilityDescription: nil)
         openButton.imagePosition = .imageLeading
         openButton.imageHugsTitle = true
@@ -681,7 +681,7 @@ private final class SessionCell: NSTableCellView {
             addSubview(label)
         }
         sessionIcon.translatesAutoresizingMaskIntoConstraints = false
-        sessionIcon.contentTintColor = FrostedSessionAppearance.color(light: .systemBlue, dark: .systemCyan)
+        sessionIcon.contentTintColor = FrostedSessionAppearance.secondaryText
         sessionIcon.setAccessibilityElement(false)
         addSubview(sessionIcon)
         textField = name
