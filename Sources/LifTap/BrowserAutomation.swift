@@ -34,6 +34,7 @@ enum BrowserAutomation {
         var captureScope: CaptureScope? = nil
         var cutScope: CaptureScope? = nil
         var closeTabs: [CutTab]? = nil
+        var preferExistingWindow: Bool? = nil
     }
 
     private struct Response: Codable {
@@ -71,7 +72,8 @@ enum BrowserAutomation {
         guard !urls.isEmpty else {
             return RestoreReport(opened: 0, failed: 0, skipped: skipped, unconfirmed: 0)
         }
-        let response = try run(Request(browser: browser, urls: urls))
+        let response = try run(Request(browser: browser, urls: urls,
+                                       preferExistingWindow: SessionSection(tabCount: session.tabs.count) == .single))
         guard var report = response.report,
               report.opened + report.failed + report.unconfirmed == urls.count
         else { throw LifTapError.workerFailed }
@@ -165,6 +167,7 @@ enum BrowserAutomation {
                 list.insert(NSAppleEventDescriptor(string: url), at: index + 1)
             }
             args.insert(list, at: 1)
+            args.insert(NSAppleEventDescriptor(boolean: request.preferExistingWindow == true && urls.count == 1), at: 2)
         } else {
             script = captureScript(for: request.browser, scope: request.captureScope ?? .window)
             handler = "capturetabs"
@@ -354,6 +357,9 @@ enum BrowserAutomation {
     static func restoreScript(for browser: Browser) -> String {
         let createWindow: String
         let raiseWindow: String
+        let selectAddedTab = browser == .safari
+            ? "set current tab to addedTab"
+            : "set active tab index to (count of tabs)"
         switch browser {
         case .chrome, .aside:
             createWindow = "set targetID to id of (make new window)"
@@ -382,7 +388,7 @@ enum BrowserAutomation {
             """
         }
         return """
-        on restoreTabs(addresses)
+        on restoreTabs(addresses, preferExistingWindow)
             set openedCount to 0
             set failedCount to 0
             set unknownCount to 0
@@ -392,7 +398,12 @@ enum BrowserAutomation {
             with timeout of 12 seconds
                 tell application id "\(browser.rawValue)"
                     try
-                        \(createWindow)
+                        if preferExistingWindow and (count of windows) > 0 then
+                            set targetID to id of front window
+                            set reuseInitialTab to false
+                        else
+                            \(createWindow)
+                        end if
                     on error number errorCode
                         if errorCode is -1712 then return {0, 0, addressCount, errorCode}
                         return {0, addressCount, 0, errorCode}
@@ -404,7 +415,12 @@ enum BrowserAutomation {
                                 if reuseInitialTab then
                                     set URL of first tab to addressText
                                 else
-                                    make new tab at end of tabs with properties {URL:addressText}
+                                    set addedTab to make new tab at end of tabs with properties {URL:addressText}
+                                end if
+                                if preferExistingWindow and not reuseInitialTab then
+                                    try
+                                        \(selectAddedTab)
+                                    end try
                                 end if
                             end tell
                             set reuseInitialTab to false

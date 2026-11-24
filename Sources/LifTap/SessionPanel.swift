@@ -352,6 +352,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         olderButton.isEnabled = canBrowse && nextCursor != nil
         previewButton.isEnabled = canBrowse && selectedSession != nil
         deleteButton.isEnabled = canBrowse && !isBusy && selectedSession != nil
+        openButton.title = selectedSession?.tabCount == 1 ? "새 탭에 열기" : "새 창에 열기"
         openButton.isEnabled = deleteButton.isEnabled && selectedBrowser != nil
     }
 
@@ -437,12 +438,12 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         picker.allowedContentTypes = [.application]
         picker.treatsFilePackagesAsDirectories = false
         picker.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        picker.message = "세션을 새 창으로 열 수 있는 브라우저를 선택해 주세요."
+        picker.message = "세션을 열 브라우저를 선택해 주세요."
         picker.prompt = "선택"
         picker.beginSheetModal(for: self) { [weak self] response in
             guard response == .OK, let self, let url = picker.url else { return }
             guard let browser = BrowserDestination(url: url) else {
-                self.setStatus("새 창으로 열 수 있는 브라우저를 선택해 주세요.", isError: true)
+                self.setStatus("Chrome, Safari 또는 Aside를 선택해 주세요.", isError: true)
                 return
             }
             if !self.browsers.contains(where: { $0.url == url }) { self.browsers.append(browser) }
