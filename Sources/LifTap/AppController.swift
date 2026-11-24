@@ -102,15 +102,15 @@ final class AppController: NSObject, NSApplicationDelegate {
                 showPanel(defaultBrowser: nil, chooseTarget: true)
             }
         case .showSessions:
-            if let panel, panel.isKeyWindow {
-                panel.close()
+            if let panel, panel.isKeyWindow, !panel.isFadingOut {
+                panel.closeWithFade()
             } else {
-                showPanel(defaultBrowser: browser)
+                showPanel(defaultBrowser: browser, animated: true)
             }
         }
     }
 
-    private func showPanel(defaultBrowser: Browser?, chooseTarget: Bool = false) {
+    private func showPanel(defaultBrowser: Browser?, chooseTarget: Bool = false, animated: Bool = false) {
         if let panel {
             if chooseTarget {
                 panel.prepareTarget(nil)
@@ -118,7 +118,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             } else if !panel.isKeyWindow {
                 panel.prepareTarget(defaultBrowser)
             }
-            panel.show(chooseTarget: chooseTarget)
+            panel.show(chooseTarget: chooseTarget, animated: animated)
             return
         }
         feedback.dismiss()
@@ -127,7 +127,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         panel.onRestore = { [weak self] key, destination in self?.restore(key: key, in: destination.browser) }
         panel.onClose = { [weak self] in self?.panel = nil }
         panel.setBusy(busy)
-        panel.show(chooseTarget: chooseTarget)
+        panel.show(chooseTarget: chooseTarget, animated: animated)
     }
 
     private func restore(key: String?, in browser: Browser) {

@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import UniformTypeIdentifiers
 
 @MainActor
@@ -34,6 +35,9 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     private var nameEdit: (session: SessionSummary, field: NSTextField)?
     private var isSavingName = false
     private var previewTask: Task<Void, Never>?
+    private var fadeOutID: UUID?
+
+    var isFadingOut: Bool { fadeOutID != nil }
 
     init(store: SessionStore, defaultBrowser: Browser?, chooseLatest: Bool = false) {
         self.store = store
@@ -64,6 +68,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     override func cancelOperation(_ sender: Any?) { close() }
 
     func windowWillClose(_ notification: Notification) {
+        fadeOutID = nil
         previewTask?.cancel()
         onClose?()
     }
@@ -74,7 +79,11 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         updateControls()
     }
 
-    func show(chooseTarget: Bool) {
+    func show(chooseTarget: Bool, animated: Bool = false) {
+        let fadeIn = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let wasFadingOut = isFadingOut
+        fadeOutID = nil
+        if !isVisible { alphaValue = fadeIn ? 0 : 1 }
         makeKeyAndOrderFront(nil)
         if #available(macOS 14, *) {
             NSApp.activate()
@@ -85,6 +94,32 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
             setStatus("대상 브라우저를 선택해 주세요.")
         }
         makeFirstResponder(chooseTarget ? target : table)
+        if fadeIn || wasFadingOut {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = fadeIn ? 0.22 : 0
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                animator().alphaValue = 1
+            }
+        }
+    }
+
+    func closeWithFade() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            close()
+            return
+        }
+        let fadeID = UUID()
+        fadeOutID = fadeID
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.fadeOutID == fadeID else { return }
+                self.close()
+            }
+        }
     }
 
     func reload(selectingLatest: Bool = false) {
