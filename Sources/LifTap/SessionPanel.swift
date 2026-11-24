@@ -13,13 +13,13 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     private let preview = NSTextView()
     private let previewScroll = NSScrollView()
     private let target = NSPopUpButton()
-    private let openButton = NSButton(title: "새 창에 열기", target: nil, action: nil)
+    private let openButton = FrostedOpenButton(title: "새 창에 열기", target: nil, action: nil)
     private let previewButton = NSButton(title: "탭 미리보기", target: nil, action: nil)
     private let deleteButton = NSButton(title: "세션 삭제…", target: nil, action: nil)
     private let latestButton = NSButton(title: "최신으로", target: nil, action: nil)
     private let olderButton = NSButton(title: "이전 세션", target: nil, action: nil)
-    private let groupedButton = NSButton(title: "저장한 세션", target: nil, action: nil)
-    private let singleButton = NSButton(title: "단일 세션", target: nil, action: nil)
+    private let groupedButton = FrostedSectionButton(title: "저장한 세션", target: nil, action: nil)
+    private let singleButton = FrostedSectionButton(title: "단일 세션", target: nil, action: nil)
     private let status = NSTextField(wrappingLabelWithString: "")
     private let emptyState = NSTextField(labelWithString: "세션을 불러오는 중…")
     private var sessions: [SessionSummary] = []
@@ -39,13 +39,18 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         self.store = store
         selectLatestSection = chooseLatest
         browsers = BrowserDestination.installed()
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 568, height: 500),
-                   styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 600, height: 544),
+                   styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
         level = .floating
         collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         title = "LifTap 세션"
+        titlebarAppearsTransparent = true
+        titlebarSeparatorStyle = .none
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
         delegate = self
         buildContent()
         prepareTarget(defaultBrowser)
@@ -99,7 +104,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
 
     func setStatus(_ text: String, isError: Bool = false) {
         status.stringValue = text
-        status.textColor = isError ? .systemRed : .secondaryLabelColor
+        status.textColor = isError ? .systemRed : FrostedSessionAppearance.secondaryText
         NSAccessibility.post(element: status, notification: .valueChanged)
     }
 
@@ -109,13 +114,13 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     }
 
     private func buildContent() {
-        let content = NSView()
+        let content = FrostedSessionSurface()
         contentView = content
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.spacing = 10
+        stack.spacing = 12
         content.addSubview(stack)
 
         for button in [groupedButton, singleButton] {
@@ -124,15 +129,14 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
             button.target = self
             button.action = #selector(changeSection(_:))
         }
-        let divider = NSTextField(labelWithString: "/")
-        divider.font = .systemFont(ofSize: 23, weight: .light)
-        divider.textColor = .secondaryLabelColor
-        divider.setAccessibilityElement(false)
+        let sections = row([groupedButton, singleButton])
+        sections.spacing = 3
+        let sectionPlate = frostedSessionPlate(wrapping: sections, horizontal: 4, vertical: 3)
         latestButton.target = self
         latestButton.action = #selector(firstPage)
         olderButton.target = self
         olderButton.action = #selector(olderPage)
-        stack.addArrangedSubview(row([groupedButton, divider, singleButton, NSView(), latestButton, olderButton]))
+        stack.addArrangedSubview(row([sectionPlate, NSView(), latestButton, olderButton]))
 
         let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session"))
         tableColumn.resizingMask = [.autoresizingMask]
@@ -140,8 +144,9 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         table.headerView = nil
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.style = .inset
-        table.rowHeight = 44
-        table.intercellSpacing = NSSize(width: 0, height: 2)
+        table.rowHeight = 48
+        table.intercellSpacing = NSSize(width: 0, height: 4)
+        table.backgroundColor = .clear
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityLabel("저장한 세션")
@@ -153,15 +158,17 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         let tableScroll = NSScrollView()
         tableScroll.hasVerticalScroller = true
         tableScroll.autohidesScrollers = true
-        tableScroll.borderType = .bezelBorder
+        tableScroll.borderType = .noBorder
+        tableScroll.drawsBackground = false
         tableScroll.documentView = table
         let tableContainer = NSView()
         tableContainer.addSubview(tableScroll)
         tableContainer.addSubview(emptyState)
         tableScroll.translatesAutoresizingMaskIntoConstraints = false
         emptyState.translatesAutoresizingMaskIntoConstraints = false
-        emptyState.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(tableContainer)
+        emptyState.textColor = FrostedSessionAppearance.secondaryText
+        let listPlate = frostedSessionPlate(wrapping: tableContainer, horizontal: 4, vertical: 5)
+        stack.addArrangedSubview(listPlate)
 
         previewButton.target = self
         previewButton.action = #selector(togglePreview)
@@ -169,7 +176,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         deleteButton.action = #selector(confirmDeletion)
         let hint = NSTextField(labelWithString: "↑↓ 선택 · → 미리보기 · ⌫ 삭제 · ↩ 열기 · Esc 닫기")
         hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
+        hint.textColor = FrostedSessionAppearance.secondaryText
         stack.addArrangedSubview(row([previewButton, deleteButton, NSView(), hint]))
 
         preview.isEditable = false
@@ -182,7 +189,10 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         preview.textContainer?.widthTracksTextView = true
         preview.setAccessibilityLabel("저장된 탭 제목과 주소")
         previewScroll.documentView = preview
-        previewScroll.borderType = .bezelBorder
+        previewScroll.borderType = .noBorder
+        previewScroll.wantsLayer = true
+        previewScroll.layer?.cornerRadius = 14
+        previewScroll.layer?.masksToBounds = true
         previewScroll.hasVerticalScroller = true
         previewScroll.autohidesScrollers = true
         stack.addArrangedSubview(previewScroll)
@@ -196,11 +206,17 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         target.action = #selector(changeTarget)
         openButton.target = self
         openButton.action = #selector(openSelection)
-        openButton.bezelStyle = .rounded
+        openButton.isBordered = false
+        openButton.font = .systemFont(ofSize: 13, weight: .semibold)
+        openButton.contentTintColor = NSColor(srgbRed: 0.08, green: 0.19, blue: 0.32, alpha: 1)
+        openButton.image = NSImage(systemSymbolName: "arrow.up.right", accessibilityDescription: nil)
+        openButton.imagePosition = .imageLeading
+        openButton.imageHugsTitle = true
         openButton.keyEquivalent = "\r"
-        stack.addArrangedSubview(row([label, target, NSView(), openButton]))
+        let browserPlate = frostedSessionPlate(wrapping: row([label, target]), horizontal: 12, vertical: 8)
+        stack.addArrangedSubview(row([browserPlate, NSView(), openButton]))
         status.font = .systemFont(ofSize: 12)
-        status.textColor = .secondaryLabelColor
+        status.textColor = FrostedSessionAppearance.secondaryText
         status.maximumNumberOfLines = 3
         status.setContentCompressionResistancePriority(.required, for: .vertical)
         stack.addArrangedSubview(status)
@@ -208,10 +224,17 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         let previewHeight = previewScroll.heightAnchor.constraint(equalToConstant: 126)
         previewHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 15),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 50),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            listPlate.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            groupedButton.widthAnchor.constraint(equalToConstant: 110),
+            singleButton.widthAnchor.constraint(equalToConstant: 94),
+            groupedButton.heightAnchor.constraint(equalToConstant: 32),
+            singleButton.heightAnchor.constraint(equalToConstant: 32),
+            openButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 146),
+            openButton.heightAnchor.constraint(equalToConstant: 38),
             tableScroll.topAnchor.constraint(equalTo: tableContainer.topAnchor),
             tableScroll.leadingAnchor.constraint(equalTo: tableContainer.leadingAnchor),
             tableScroll.trailingAnchor.constraint(equalTo: tableContainer.trailingAnchor),
@@ -344,8 +367,8 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         for (button, selected) in [(groupedButton, section == .grouped), (singleButton, section == .single)] {
             button.state = selected ? .on : .off
             button.isEnabled = canBrowse
-            button.font = .systemFont(ofSize: selected ? 20 : 15, weight: selected ? .semibold : .regular)
-            button.contentTintColor = selected ? .labelColor : .secondaryLabelColor
+            button.font = .systemFont(ofSize: 14, weight: selected ? .semibold : .medium)
+            button.contentTintColor = selected ? .labelColor : FrostedSessionAppearance.secondaryText
         }
         table.setAccessibilityLabel(section == .single ? singleButton.title : groupedButton.title)
         latestButton.isEnabled = canBrowse && cursor != nil
@@ -611,6 +634,10 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
         updateControls()
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        FrostedSessionRow()
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("SessionCell")
         let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? SessionCell ?? SessionCell()
@@ -640,22 +667,31 @@ private final class SessionTable: NSTableView {
 private final class SessionCell: NSTableCellView {
     private let name = NSTextField(labelWithString: "")
     private let metadata = NSTextField(labelWithString: "")
+    private let sessionIcon = NSImageView()
 
     init() {
         super.init(frame: .zero)
-        name.font = .systemFont(ofSize: 13, weight: .semibold)
+        name.font = .systemFont(ofSize: 14, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
         metadata.font = .systemFont(ofSize: 11)
-        metadata.textColor = .secondaryLabelColor
+        metadata.textColor = FrostedSessionAppearance.secondaryText
         for label in [name, metadata] {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             addSubview(label)
         }
+        sessionIcon.translatesAutoresizingMaskIntoConstraints = false
+        sessionIcon.contentTintColor = FrostedSessionAppearance.color(light: .systemBlue, dark: .systemCyan)
+        sessionIcon.setAccessibilityElement(false)
+        addSubview(sessionIcon)
         textField = name
         NSLayoutConstraint.activate([
-            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            name.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            sessionIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            sessionIcon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            sessionIcon.widthAnchor.constraint(equalToConstant: 20),
+            sessionIcon.heightAnchor.constraint(equalToConstant: 20),
+            name.leadingAnchor.constraint(equalTo: sessionIcon.trailingAnchor, constant: 10),
+            name.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             name.bottomAnchor.constraint(equalTo: centerYAnchor),
             metadata.leadingAnchor.constraint(equalTo: name.leadingAnchor),
             metadata.trailingAnchor.constraint(equalTo: name.trailingAnchor),
@@ -665,14 +701,9 @@ private final class SessionCell: NSTableCellView {
 
     required init?(coder: NSCoder) { nil }
 
-    override var backgroundStyle: NSView.BackgroundStyle {
-        didSet {
-            metadata.textColor = backgroundStyle == .emphasized
-                ? .alternateSelectedControlTextColor : .secondaryLabelColor
-        }
-    }
-
     func show(_ session: SessionSummary) {
+        sessionIcon.image = NSImage(systemSymbolName: session.tabCount == 1 ? "macwindow" : "rectangle.on.rectangle",
+                                    accessibilityDescription: nil)
         name.stringValue = session.name
         metadata.stringValue = "\(session.tabCount)개 탭 · \(session.sourceBrowser.name) · "
             + session.createdAt.formatted(date: .abbreviated, time: .shortened)
