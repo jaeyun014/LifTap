@@ -35,9 +35,11 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     private var nameEdit: (session: SessionSummary, field: NSTextField)?
     private var isSavingName = false
     private var previewTask: Task<Void, Never>?
-    private var fadeOutID: UUID?
-
-    var isFadingOut: Bool { fadeOutID != nil }
+    private var transitionTask: Task<Void, Never>?
+    private let horizontalEdge = CAGradientLayer()
+    private let verticalEdge = CAGradientLayer()
+    private var edgeFade: CGFloat = 0
+    private(set) var isFadingOut = false
 
     init(store: SessionStore, defaultBrowser: Browser?, chooseLatest: Bool = false) {
         self.store = store
@@ -68,7 +70,7 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
     override func cancelOperation(_ sender: Any?) { close() }
 
     func windowWillClose(_ notification: Notification) {
-        fadeOutID = nil
+        resetTransition()
         previewTask?.cancel()
         onClose?()
     }
@@ -81,9 +83,11 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
 
     func show(chooseTarget: Bool, animated: Bool = false) {
         let fadeIn = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let wasFadingOut = isFadingOut
-        fadeOutID = nil
-        if !isVisible { alphaValue = fadeIn ? 0 : 1 }
+        let presenting = !isVisible || isFadingOut
+        if !isVisible {
+            alphaValue = fadeIn ? 0 : 1
+            if fadeIn { setEdgeFade(1) }
+        }
         makeKeyAndOrderFront(nil)
         if #available(macOS 14, *) {
             NSApp.activate()
@@ -94,11 +98,12 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
             setStatus("대상 브라우저를 선택해 주세요.")
         }
         makeFirstResponder(chooseTarget ? target : table)
-        if fadeIn || wasFadingOut {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = fadeIn ? 0.22 : 0
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                animator().alphaValue = 1
+        if presenting {
+            if fadeIn {
+                animateTransition(closing: false)
+            } else {
+                resetTransition()
+                alphaValue = 1
             }
         }
     }
@@ -108,18 +113,69 @@ final class SessionPanel: NSPanel, NSWindowDelegate, NSOpenSavePanelDelegate, NS
             close()
             return
         }
-        let fadeID = UUID()
-        fadeOutID = fadeID
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.fadeOutID == fadeID else { return }
-                self.close()
+        animateTransition(closing: true)
+    }
+
+    private func animateTransition(closing: Bool) {
+        transitionTask?.cancel()
+        isFadingOut = closing
+        let startOpacity = alphaValue
+        let startEdge = edgeFade
+        let duration = closing ? 0.24 : 0.28
+        let startTime = CACurrentMediaTime()
+        transitionTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let progress = min((CACurrentMediaTime() - startTime) / duration, 1)
+                let smooth = progress * progress * (3 - 2 * progress)
+                let easeOut = 1 - pow(1 - progress, 3)
+                let opacityProgress = closing ? smooth : easeOut
+                let edgeProgress = closing ? easeOut : smooth
+                self.alphaValue = startOpacity + ((closing ? 0 : 1) - startOpacity) * opacityProgress
+                self.setEdgeFade(startEdge + ((closing ? 1 : 0) - startEdge) * edgeProgress)
+                if progress == 1 {
+                    self.resetTransition()
+                    if closing { self.close() }
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
             }
         }
+    }
+
+    private func setEdgeFade(_ amount: CGFloat) {
+        edgeFade = amount
+        guard let layer = contentView?.layer, !layer.bounds.isEmpty else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if amount < 0.01 {
+            layer.mask = nil
+        } else {
+            let opaque = NSColor.white.cgColor
+            let edge = NSColor.white.withAlphaComponent(1 - amount).cgColor
+            let colors = [edge, opaque, opaque, edge]
+            // The vertical mask multiplies the horizontal fade, softening corners as well.
+            for (gradient, length) in [(horizontalEdge, layer.bounds.width), (verticalEdge, layer.bounds.height)] {
+                let depth = min(18 * amount / length, 0.5)
+                gradient.frame = CGRect(origin: .zero, size: layer.bounds.size)
+                gradient.colors = colors
+                gradient.locations = [0, NSNumber(value: depth), NSNumber(value: 1 - depth), 1]
+            }
+            horizontalEdge.startPoint = CGPoint(x: 0, y: 0.5)
+            horizontalEdge.endPoint = CGPoint(x: 1, y: 0.5)
+            verticalEdge.startPoint = CGPoint(x: 0.5, y: 0)
+            verticalEdge.endPoint = CGPoint(x: 0.5, y: 1)
+            horizontalEdge.mask = verticalEdge
+            layer.mask = horizontalEdge
+        }
+        CATransaction.commit()
+    }
+
+    private func resetTransition() {
+        transitionTask?.cancel()
+        transitionTask = nil
+        isFadingOut = false
+        setEdgeFade(0)
     }
 
     func reload(selectingLatest: Bool = false) {
