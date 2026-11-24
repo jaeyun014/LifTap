@@ -253,6 +253,7 @@ enum LifTapError: LocalizedError {
     case restoreOnlyBrowser(Browser)
     case diaAccessibilityRequired
     case browserUnavailable(Browser), permissionDenied(Browser), timedOut(Browser), newWindowNotIdentified(Browser)
+    case workerTimedOut(Browser)
     case browserFailed(Browser, Int?), workerFailed, storageRead, storageWrite, storageDelete
 
     var errorDescription: String? {
@@ -273,6 +274,7 @@ enum LifTapError: LocalizedError {
             "\(browser.name)의 새 창을 확인할 수 없어요. 브라우저를 확인한 뒤 다시 시도해 주세요."
         case let .browserFailed(browser, code):
             "\(browser.name)이(가) 작업을 완료하지 못했어요" + (code.map { " (오류 \($0))." } ?? ".")
+        case let .workerTimedOut(browser): "\(browser.name) 작업 시간이 초과됐어요. 다시 시도하기 전에 브라우저에서 작업 결과를 확인해 주세요."
         case .workerFailed: "브라우저 작업의 결과를 확인할 수 없어요. 다시 열기 전에 브라우저를 확인해 주세요."
         case .storageRead: "저장된 세션을 읽을 수 없어요."
         case .storageWrite: "세션을 저장하지 못했어요. 디스크 공간과 저장 폴더 권한을 확인해 주세요."

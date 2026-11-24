@@ -119,37 +119,101 @@ enum BrowserAutomation {
     private static func run(_ request: Request) throws -> Response {
         guard let executable = Bundle.main.executableURL else { throw LifTapError.workerFailed }
         let process = Process()
-        let input = Pipe()
-        let output = Pipe()
         process.executableURL = executable
         process.arguments = ["--automation-worker"]
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
 
         let response: Response
         do {
             let data = try JSONEncoder().encode(request)
-            // A worker that exits early must not take the menu bar app down with it.
-            _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-            try process.run()
-            do {
-                try input.fileHandleForWriting.write(contentsOf: data)
-                try input.fileHandleForWriting.close()
-            } catch {
-                try? input.fileHandleForWriting.close()
-                process.waitUntilExit()
-                throw error
-            }
-            let reply = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { throw LifTapError.workerFailed }
+            let reply = try exchange(data, with: process, timeout: .seconds(60))
             response = try JSONDecoder().decode(Response.self, from: reply)
+        } catch is WorkerTimeout {
+            throw LifTapError.workerTimedOut(request.browser)
         } catch {
             throw LifTapError.workerFailed
         }
         if let code = response.errorCode { throw error(for: code, browser: request.browser) }
         return response
+    }
+
+    struct WorkerTimeout: Error {}
+
+    static func exchange(_ data: Data, with process: Process, timeout: DispatchTimeInterval) throws -> Data {
+        let input = Pipe()
+        let output = Pipe()
+        let writer = input.fileHandleForWriting
+        let reader = output.fileHandleForReading
+        let inputFD = writer.fileDescriptor
+        let outputFD = reader.fileDescriptor
+        let exited = DispatchSemaphore(value: 0)
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in exited.signal() }
+
+        // Never block inside read or write after poll has returned.
+        guard fcntl(inputFD, F_SETNOSIGPIPE, 1) != -1,
+              fcntl(inputFD, F_SETFL, O_NONBLOCK) != -1,
+              fcntl(outputFD, F_SETFL, O_NONBLOCK) != -1
+        else { throw LifTapError.workerFailed }
+
+        let deadline = DispatchTime.now() + timeout
+        try process.run()
+        defer {
+            if process.isRunning {
+                // A wedged worker can ignore a catchable signal.
+                _ = kill(process.processIdentifier, SIGKILL)
+            }
+            try? writer.close()
+            try? reader.close()
+        }
+
+        // The worker reads the entire request through EOF before writing a reply.
+        try data.withUnsafeBytes { bytes in
+            guard let start = bytes.baseAddress else { return }
+            var sent = 0
+            while sent < bytes.count {
+                try waitForIO(inputFD, events: Int16(POLLOUT), until: deadline)
+                let count = Darwin.write(inputFD, start.advanced(by: sent), bytes.count - sent)
+                if count > 0 {
+                    sent += count
+                } else if count == 0 || (errno != EAGAIN && errno != EINTR) {
+                    throw LifTapError.workerFailed
+                }
+            }
+        }
+        try writer.close()
+
+        var reply = Data()
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            try waitForIO(outputFD, events: Int16(POLLIN), until: deadline)
+            let count = Darwin.read(outputFD, &buffer, buffer.count)
+            if count == 0 { break }
+            if count > 0 {
+                reply.append(contentsOf: buffer.prefix(count))
+            } else if errno != EAGAIN && errno != EINTR {
+                throw LifTapError.workerFailed
+            }
+        }
+        guard exited.wait(timeout: deadline) == .success else { throw WorkerTimeout() }
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+            throw LifTapError.workerFailed
+        }
+        return reply
+    }
+
+    private static func waitForIO(_ fd: Int32, events: Int16, until deadline: DispatchTime) throws {
+        var descriptor = pollfd(fd: fd, events: events, revents: 0)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline.uptimeNanoseconds else { throw WorkerTimeout() }
+            let remaining = deadline.uptimeNanoseconds - now
+            let milliseconds = Int32(clamping: (remaining - 1) / 1_000_000 + 1)
+            let ready = poll(&descriptor, 1, milliseconds)
+            if ready > 0 { return } // Read/write also handles EOF or a closed pipe.
+            if ready < 0 && errno != EINTR { throw LifTapError.workerFailed }
+        }
     }
 
     // This is the main thread of the short-lived worker. The UI process never loads a script.

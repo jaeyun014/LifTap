@@ -168,6 +168,29 @@ struct SessionTests {
         }
     }
 
+    @Test func workerExchangesPayloadsLargerThanAPipeBuffer() throws {
+        let worker = Process()
+        worker.executableURL = URL(fileURLWithPath: "/bin/sh")
+        worker.arguments = ["-c", #"payload=$(cat); printf '%s' "$payload""#]
+        let payload = Data(repeating: 0x61, count: 256 * 1024)
+        #expect(try BrowserAutomation.exchange(payload, with: worker, timeout: .seconds(5)) == payload)
+    }
+
+    @Test(arguments: ["write", "read", "exit"])
+    func workerDeadlineCoversBothPipesAndProcessExit(phase: String) throws {
+        let worker = Process()
+        worker.executableURL = URL(fileURLWithPath: "/bin/sh")
+        let closeOutput = phase == "exit" ? "exec 1>&-; " : ""
+        worker.arguments = ["-c", closeOutput + "exec /bin/sleep 5"]
+        let payload = Data(repeating: 0x61, count: phase == "write" ? 256 * 1024 : 0)
+
+        #expect(throws: BrowserAutomation.WorkerTimeout.self) {
+            try BrowserAutomation.exchange(payload, with: worker, timeout: .milliseconds(150))
+        }
+        worker.waitUntilExit()
+        #expect(worker.terminationReason == .uncaughtSignal)
+    }
+
     @Test func firefoxRestoresSingleTabsAndGroupedSessionsWithDifferentArguments() {
         let addresses = [web.url, "https://example.test/other"]
         #expect(BrowserAutomation.firefoxArguments([addresses[0]], single: true) == ["--new-tab", addresses[0]])
